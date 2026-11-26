@@ -1,5 +1,6 @@
 # Only the Rust workspace and the embedded assets are needed to build zashu-mint.
 target
+spikes
 video
 NUTZ
 scripts

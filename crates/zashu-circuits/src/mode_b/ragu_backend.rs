@@ -22,9 +22,11 @@
 //! * `Merge`: combines two parts; anchors and epochs must agree, balances add.
 //! * `Finalize`: turns the last part into the transaction statement.
 //!
-//! The verifier only ever sees the compressed `Finalize` proof and its header
-//! `[anchor, epoch, digest, balance]`. Which `Spend*` circuits ran is inside
-//! the recursion, which is how the predicate stays hidden from the mint.
+//! The verifier only ever sees the rerandomized, compressed transaction proof
+//! and its header `[anchor, epoch, digest, balance]`. Which `Spend*` circuits
+//! ran is inside the recursion. Hiding that from the mint relies on Ragu's
+//! rerandomization, whose indistinguishability Ragu documents as a goal that
+//! is not yet proven; treat predicate privacy as best-effort until it is.
 //!
 //! `digest` commits to the ordered nullifiers and output commitments; the
 //! verifier recomputes it from the public lists (see [`tx_digest`]). `balance`
@@ -827,6 +829,13 @@ pub fn prove_tx_unchecked(
         .fuse(&mut rng(), FinalizeStep, (), root, unit(app))
         .map_err(|e| ragu_err("finalize", e))?
         .0;
+    // A Ragu proof, compressed or not, is not hiding by itself: its openings
+    // are evaluations of witness polynomials, and a fuse stores what it reads
+    // of its children. Ragu's `rerandomize` (two more fuses) is what it
+    // provides for publishing a proof privately, so the transaction is always
+    // rerandomized before it is compressed. Ragu states indistinguishability
+    // of rerandomized proofs as a design goal that is not yet proven.
+    let tx = app.rerandomize(tx, &mut rng()).map_err(|e| ragu_err("rerandomize", e))?;
     let compressed = app.compress(&tx, &mut rng()).map_err(|e| ragu_err("compress", e))?;
     let (proof, data) = compressed.into_parts();
     let bytes = proof.to_bytes().map_err(|e| ragu_err("encode", format!("{e:?}")))?;

@@ -20,7 +20,7 @@ Cashu excels at fast, private digital cash, but has four well-known structural t
 
 | Extension | What It Adds to Cashu | Works with Existing Cashu Wallets? |
 | :--- | :--- | :--- |
-| **[`NUTZ-1`](./NUTZ/NUTZ-1.md)** | **Verifiable Mint Solvency & Prunable Storage** — Folds `mint`/`swap`/`melt` accounting into one constant-size proof (`total_liabilities <= L1 Bitcoin reserves`). The fold is recursive Ragu PCD (~6 KB, verified in ~70 ms); the fallback Halo 2 fold is a ~16 KB batch proof verified in ~1 ms that does not re-check the steps. Prunes old spent-secret storage via Tachyon accumulators. | **Yes (100% drop-in)** via CDK sidecar (`GET /v1/solvency`) |
+| **[`NUTZ-1`](./NUTZ/NUTZ-1.md)** | **Verifiable Mint Solvency & Prunable Storage** — Folds `mint`/`swap`/`melt` accounting into one constant-size proof (`total_liabilities <= L1 Bitcoin reserves`). The fold is recursive Ragu PCD (6.2 KB, verified in ~70 ms); the fallback Halo 2 fold is a smaller and much faster batch proof (3.4 KB, ~2 ms) that does not re-check the steps. Prunes old spent-secret storage via Tachyon accumulators. | **Yes (100% drop-in)** via CDK sidecar (`GET /v1/solvency`) |
 | **[`NUTZ-2`](./NUTZ/NUTZ-2.md)** | **Arbitrary-Amount Shielded Notes** — Replaces power-of-2 splits (`128 + 8 + 1`) with 1 single Pedersen-committed note (`137 sats`). One proof per transaction covers 32-level Poseidon Merkle inclusion, 64-bit ranges and value balance; the default Ragu backend also binds every note opening and nullifier (see [Proof backends](#proof-backends)). | **Coexists** via zero-fee `/v1/zk/shield` & `/v1/zk/unshield` |
 | **[`NUTZ-3`](./NUTZ/NUTZ-3.md)** | **Offline-Safe Stealth Receives & Oblivious Sync** — Pay a friend's `zsp1...` stealth address while they are offline (double-spend-proof once confirmed). Wallets refresh witnesses via `GET /v1/zk/sync` without revealing which notes they own. | Opt-in Zashu wallet feature |
 | **[`NUTZ-4`](./NUTZ/NUTZ-4.md)** | **Hidden Programmable Policies & Cross-Mint Swaps** — Hides `P2PK`, `Timelock` and `PrivateHTLC` conditions inside Ragu non-uniform step circuits so the mint never sees your spending policy or hashlocks (`Multisig`, and the fallback Halo 2 backend, check the policy in the wallet only). | Opt-in Zashu wallet feature |
@@ -112,12 +112,15 @@ cargo build --release -p zashu-mint --no-default-features
 | **`NUTZ-1` solvency fold** | Recursive: the proof attests every step, opens each step's state hash in-circuit and enforces that states and liabilities chain. Folded in the background as steps happen. | The folder verifies step proofs itself; the folded proof exposes only the start and end state. |
 | **`NUTZ-2` shielded transactions** | Every input's note opening, Merkle membership and nullifier, every output's opening, and the value balance are enforced in-circuit. | Proves Merkle membership of one input, 64-bit ranges and value balance. Note openings and nullifiers are not bound by the proof. |
 | **`NUTZ-4` predicates** | One step circuit per predicate (`StandardSpend`, `P2PK`, `Timelock`, `PrivateHTLC` claim and refund), enforced in-circuit and hidden from the mint. `Multisig` is not ported yet. | Checked by the wallet when it builds the proof; not part of the proof. |
-| **Solvency proof** | ~6 KB, ~70 ms to verify, ~1 s of proving per step | ~16 KB (base64), ~1 ms to verify |
-| **Shielded swap (1 in, 2 out)** | ~6.5 s to prove, ~70 ms to verify, ~6 KB | one `k=13` proof (not benchmarked here) |
+| **Solvency proof, 64 steps** | 67 s to fold, 69 ms to verify, 6,208 bytes | 0.12 s to fold, 1.8 ms to verify, 3,360 bytes |
+| **Shielded swap (1 in, 2 out)** | 7.3 s to prove, 72 ms to verify, 6,208 bytes | 0.74 s to prove, 13 ms to verify, 4,384 bytes |
 
+* Ragu costs roughly 10x the proving time of Halo 2 per shielded transaction and far more for the solvency fold, because it actually re-proves and recursively verifies every step; see [`BENCHMARKS.md`](./BENCHMARKS.md) for the full comparison.
+* Proof sizes above are raw proof bytes. Proofs are currently embedded in JSON as a base64-encoded byte array, which inflates them about 4.8x on the wire (a Ragu solvency bundle is about 31 KB).
+* Predicate privacy is best-effort: transaction proofs are rerandomized before they are published, which is the mechanism Ragu provides for this, but Ragu documents the indistinguishability of rerandomized proofs as a goal that is not yet proven.
 * A mint running the Ragu backend rejects Halo 2 transaction proofs, and rejects any proof whose predicates were evaluated at an epoch ahead of the mint's.
 * The mint, sidecar, auditor and wallet all enable the `ragu` feature by default. A Halo 2-only build of any of them cannot verify or produce Ragu proofs.
-* A Ragu shielded swap takes several seconds to prove on a laptop and holds proofs of about 34 MB each in memory while proving; size mint and wallet machines accordingly.
+* A Ragu shielded swap holds proofs of about 34 MB each in memory while proving; size mint and wallet machines accordingly.
 * [Ragu](https://github.com/tachyon-zcash/ragu) is unreleased and still being audited upstream. It is pinned to a git commit, needs Rust 1.97.1+, and is fetched from GitHub at build time.
 * Timings are from one 10-core Apple Silicon laptop; see [`BENCHMARKS.md`](./BENCHMARKS.md).
 * Code: `crates/zashu-circuits/src/mode_a/ragu_backend.rs`, `crates/zashu-circuits/src/mode_b/ragu_backend.rs`; the original spike is in `spikes/ragu-pcd`.

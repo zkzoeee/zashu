@@ -35,7 +35,7 @@ A spend does not fit in one Ragu step, so a transaction is a small tree of steps
 4. **Output**: opens each output commitment and range-checks its value.
 5. **Merge / Finalize**: anchors and epochs must agree and values add up; the final statement is `[anchor, epoch, digest, balance]`.
 
-`digest` commits to the ordered nullifiers and output commitments and is recomputed by the mint. `balance` is `sum(inputs) - sum(outputs)`: zero for a swap, the public amount for a melt, its negation for a mint. The mint only sees the `Finalize` proof, so which spend circuits ran stays inside the recursion.
+`digest` commits to the ordered nullifiers and output commitments and is recomputed by the mint. `balance` is `sum(inputs) - sum(outputs)`: zero for a swap, the public amount for a melt, its negation for a mint. The transaction proof is rerandomized before it is published, and the mint sees only that proof, so which spend circuits ran stays inside the recursion. This relies on Ragu's rerandomization, whose indistinguishability Ragu documents as a design goal that is not yet proven; predicate privacy is best-effort until it is.
 
 ### 2.2 Nullifiers
 

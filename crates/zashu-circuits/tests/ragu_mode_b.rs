@@ -252,3 +252,25 @@ fn ragu_mint_refuses_halo2_transaction_proofs() {
     verify_zk_mint(&ragu, 21, &cm, &cv).unwrap();
     assert!(verify_zk_mint(&ragu, 22, &cm, &cv).is_err());
 }
+
+#[test]
+fn multisig_notes_are_refused_with_a_clear_error() {
+    use zashu_circuits::predicates::compute_multisig_params;
+
+    let (sk_a, pk_a) = keypair(1);
+    let (sk_b, pk_b) = keypair(2);
+    let (_, pk_c) = keypair(3);
+    let pks = vec![pk_a, pk_b, pk_c];
+    let ms = note(90, pk_a, PredicateId::Multisig, compute_multisig_params(2, &pks), 1);
+    let (world, w) = World::new(&[&ms]);
+    let witness = PredicateWitness::Multisig {
+        threshold: 2,
+        pubkeys: pks,
+        signer_indices: vec![0, 1],
+        signer_sks: vec![sk_a, sk_b],
+    };
+    let out = note(90, pk_b, PredicateId::StandardSpend, [0u8; 32], 9);
+    let err = prove_tx(&world.anchor, 0, &[SpendInput { note: &ms, witness: &w[0], predicate: &witness }], &[&out])
+        .unwrap_err();
+    assert!(err.to_string().contains("multisig"), "{err}");
+}
