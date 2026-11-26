@@ -93,6 +93,14 @@ fn ragu_fold_rejects_broken_chains() {
     assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[p1.clone(), p2]).is_err());
     // Steps do not start at the requested start state.
     assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s1, &s1, &[p1]).is_err());
+    // A step whose carried transition was altered no longer chains.
+    let Chain { states: [s0, _, _, s3], steps: [mut p1, p2, p3] } = chain();
+    p1.transition.as_mut().unwrap().next.total_liabilities = 5_000;
+    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[p1, p2.clone(), p3.clone()]).is_err());
+    // A step proof stripped of its transition cannot be re-proven.
+    let mut bare = chain().steps[0].clone();
+    bare.transition = None;
+    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[bare, p2, p3]).is_err());
     // Empty batch.
     assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[]).is_err());
 }

@@ -4,10 +4,14 @@ pub mod mode_b;
 pub mod pcd;
 pub mod poseidon_chip;
 pub mod predicates;
+#[cfg(feature = "ragu")]
+pub mod ragu_gadgets;
 pub mod range_check;
 
 pub use error::{CircuitError, Result};
-pub use pcd::{FoldedProof, PcdEngine, PcdProver, PcdVerifier, SubcircuitId, DEFAULT_K};
+pub use pcd::{
+    FoldedProof, PcdEngine, PcdProver, PcdVerifier, StateTransition, SubcircuitId, DEFAULT_K,
+};
 
 #[cfg(test)]
 mod tests {

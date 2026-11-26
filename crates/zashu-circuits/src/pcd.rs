@@ -15,6 +15,7 @@ use rand::rand_core::UnwrapErr;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use zashu_core::field::{bytes_to_fp, fp_to_bytes};
+use zashu_core::types::MintState;
 
 use crate::error::{CircuitError, Result};
 
@@ -47,9 +48,26 @@ pub struct FoldedProof {
     pub public_inputs: Vec<[u8; 32]>,
     pub ipa_proof: Vec<u8>,
     pub folded_children: usize,
+    /// Mode A step proofs only: the mint states this step moves between. The
+    /// Ragu fold backend re-proves the step from these, opening both state
+    /// hashes in-circuit. Not part of the proof and absent on folded proofs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transition: Option<Box<StateTransition>>,
+}
+
+/// The mint states before and after one Mode A step.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StateTransition {
+    pub prev: MintState,
+    pub next: MintState,
 }
 
 impl FoldedProof {
+    pub fn with_transition(mut self, prev: &MintState, next: &MintState) -> Self {
+        self.transition = Some(Box::new(StateTransition { prev: prev.clone(), next: next.clone() }));
+        self
+    }
+
     pub fn to_base64(&self) -> Result<String> {
         let bytes = serde_json::to_vec(self)
             .map_err(|e| CircuitError::InvalidWitness(format!("serialize proof: {e}")))?;
@@ -157,6 +175,7 @@ impl PcdEngine {
             public_inputs,
             ipa_proof,
             folded_children,
+            transition: None,
         })
     }
 

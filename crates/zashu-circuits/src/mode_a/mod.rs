@@ -443,6 +443,7 @@ pub fn prove_mint_step(prev: &MintState, next: &MintState, amount: u64) -> Resul
         &instances,
         1,
     )
+    .map(|p| p.with_transition(prev, next))
 }
 
 pub fn prove_swap_step(
@@ -484,6 +485,7 @@ pub fn prove_swap_step(
         &instances,
         1,
     )
+    .map(|p| p.with_transition(prev, next))
 }
 
 pub fn prove_melt_step(prev: &MintState, next: &MintState, amount: u64) -> Result<FoldedProof> {
@@ -513,6 +515,7 @@ pub fn prove_melt_step(prev: &MintState, next: &MintState, amount: u64) -> Resul
         &instances,
         1,
     )
+    .map(|p| p.with_transition(prev, next))
 }
 
 pub fn verify_mode_a_step(proof: &FoldedProof) -> Result<()> {
@@ -552,11 +555,7 @@ pub fn fold_mode_a_batch_with(
     match backend {
         FoldBackend::Halo2 => fold_mode_a_batch_halo2(start_state, end_state, step_proofs),
         #[cfg(feature = "ragu")]
-        FoldBackend::Ragu => ragu_backend::fold(
-            &zashu_core::field::fp_to_bytes(&state_hash_to_fp(&start_state.state_hash())),
-            &zashu_core::field::fp_to_bytes(&state_hash_to_fp(&end_state.state_hash())),
-            step_proofs,
-        ),
+        FoldBackend::Ragu => ragu_backend::fold(start_state, end_state, step_proofs),
         #[cfg(not(feature = "ragu"))]
         FoldBackend::Ragu => Err(ragu_unavailable()),
     }

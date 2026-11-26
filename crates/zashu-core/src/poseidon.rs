@@ -66,6 +66,24 @@ pub fn hash_nullifier(sk_or_auth: &[u8; 32], rho: &[u8; 32]) -> [u8; 32] {
     fp_to_bytes(&poseidon_3(fp_from_u64(DOMAIN_NF), sk_fp, rho_fp))
 }
 
+/// The three accumulator/log roots of a mint state as field elements, exactly as
+/// [`hash_mint_state`] absorbs them. Circuits that recompute the state hash
+/// must use this mapping.
+pub fn mint_state_root_fields(
+    nullifier_acc_root: &[u8; 32],
+    note_acc_root: &[u8; 32],
+    event_log_hash: &[u8; 32],
+) -> [Fp; 3] {
+    let nf_fp = bytes_to_fp(nullifier_acc_root)
+        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-nf-root", nullifier_acc_root));
+    let note_fp = bytes_to_fp(note_acc_root)
+        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-note-root", note_acc_root));
+    let ev_fp = bytes_to_fp(event_log_hash)
+        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-ev", event_log_hash));
+    [nf_fp, note_fp, ev_fp]
+}
+
+/// `Poseidon3(Poseidon4(DOMAIN_STATE, epoch, total_liabilities, nf_root), note_root, event_log)`.
 pub fn hash_mint_state(
     epoch: u64,
     total_liabilities: u64,
@@ -73,13 +91,8 @@ pub fn hash_mint_state(
     note_acc_root: &[u8; 32],
     event_log_hash: &[u8; 32],
 ) -> [u8; 32] {
-    let nf_fp = bytes_to_fp(nullifier_acc_root)
-        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-nf-root", nullifier_acc_root));
-    let note_fp = bytes_to_fp(note_acc_root)
-        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-note-root", note_acc_root));
-    let ev_fp = bytes_to_fp(event_log_hash)
-        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-ev", event_log_hash));
-
+    let [nf_fp, note_fp, ev_fp] =
+        mint_state_root_fields(nullifier_acc_root, note_acc_root, event_log_hash);
     let h1 = poseidon_4(
         fp_from_u64(DOMAIN_STATE),
         fp_from_u64(epoch),

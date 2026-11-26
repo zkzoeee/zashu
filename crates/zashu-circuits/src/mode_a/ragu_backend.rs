@@ -3,15 +3,18 @@
 //! Enabled with the `ragu` cargo feature. Ragu is unreleased and unaudited
 //! upstream, so this backend is opt-in and must not be relied on in production.
 //!
-//! Each Mode A step is re-proven as a Ragu leaf from the public inputs of its
-//! Halo 2 step proof, and the leaves are fused left to right into one proof.
+//! Each Mode A step is re-proven as a Ragu leaf from the state transition its
+//! Halo 2 step proof carries, and the leaves are fused left to right into one proof.
 //! Unlike the Halo 2 `FoldBatchCircuit`, the fold is recursive: the root proof
 //! attests that every step's liabilities arithmetic holds and that state hashes
 //! and liabilities chain contiguously from the first step to the last.
 //!
-//! As in the Halo 2 backend, a step's state hashes are public values supplied
-//! by the mint; the circuit does not open them to the liabilities they commit
-//! to. The auditor binds the two at the endpoints in `verify_fold_batch`.
+//! Every step opens both of its state hashes in-circuit (the same Poseidon
+//! construction as `MintState::state_hash`), so the liabilities the circuit
+//! does arithmetic on are the liabilities the state hashes commit to. Epochs
+//! are checked to be non-decreasing. What a step does not check is how the
+//! nullifier root, note root and event log change; those are covered by the
+//! Mode B proofs and by replaying the mint's public event log.
 //!
 //! The compressed root is returned as a [`FoldedProof`] whose public inputs use
 //! the same layout as the Halo 2 `FoldBatch` proof:
@@ -34,8 +37,12 @@ use ragu::{Application, ApplicationBuilder, CompressedProof, Pcd};
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 
+use zashu_core::poseidon::{mint_state_root_fields, DOMAIN_STATE};
+use zashu_core::types::MintState;
+
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, SubcircuitId};
+use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of};
 
 /// Ragu circuit rank (`2^14` constraints per step circuit).
 pub const RAGU_RANK: u32 = 14;
@@ -84,26 +91,66 @@ enum StepKind {
     Melt,
 }
 
-#[derive(Clone, Copy)]
-struct StepWitness {
-    prev_liabilities: u64,
-    next_liabilities: u64,
-    state_prev: Fp,
-    state_next: Fp,
+/// The preimage of a `MintState::state_hash`.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StateFields {
+    epoch: u64,
+    liabilities: u64,
+    nf_root: Fp,
+    note_root: Fp,
+    event_log: Fp,
+    /// Native `state_hash`, used only for pre-checks outside the circuit.
+    hash: Fp,
 }
 
-fn header_value<'dr, D: Driver<'dr, F = Fp>>(out: &Payload<'dr, D>) -> DriverValue<D, [Fp; PAYLOAD]> {
-    let mut acc: DriverValue<D, Vec<Fp>> = D::just(|| Vec::with_capacity(PAYLOAD));
-    for i in 0..PAYLOAD {
-        let v = out[i].value().map(|v| *v);
-        acc = acc.and_then(|mut xs| {
-            v.map(|v| {
-                xs.push(v);
-                xs
-            })
-        });
+impl StateFields {
+    fn of(state: &MintState) -> Result<Self> {
+        let [nf, note, ev] =
+            mint_state_root_fields(&state.nullifier_acc_root, &state.note_acc_root, &state.event_log_hash);
+        Ok(Self {
+            epoch: state.epoch,
+            liabilities: state.total_liabilities,
+            nf_root: fp_from_pasta(&nf),
+            note_root: fp_from_pasta(&note),
+            event_log: fp_from_pasta(&ev),
+            hash: fp_from_bytes(&state.state_hash())?,
+        })
     }
-    acc.map(|xs| core::array::from_fn(|i| xs[i]))
+}
+
+#[derive(Clone, Copy)]
+struct StepWitness {
+    prev: StateFields,
+    next: StateFields,
+}
+
+struct OpenedState<'dr, D: Driver<'dr>> {
+    epoch: Element<'dr, D>,
+    liabilities: Element<'dr, D>,
+    hash: Element<'dr, D>,
+}
+
+/// Allocates a state preimage, range-checks its integers and recomputes
+/// `Poseidon3(Poseidon4(DOMAIN_STATE, epoch, liabilities, nf_root), note_root, event_log)`.
+fn open_state<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    allocator: &mut impl Allocator<'dr, D>,
+    state: DriverValue<D, StateFields>,
+) -> ragu::Result<OpenedState<'dr, D>> {
+    let max = Fp::from(u64::MAX);
+    let epoch = Element::alloc(dr, allocator, state.as_ref().map(|s| Fp::from(s.epoch)))?;
+    let liabilities = Element::alloc(dr, allocator, state.as_ref().map(|s| Fp::from(s.liabilities)))?;
+    let nf_root = Element::alloc(dr, allocator, state.as_ref().map(|s| s.nf_root))?;
+    let note_root = Element::alloc(dr, allocator, state.as_ref().map(|s| s.note_root))?;
+    let event_log = Element::alloc(dr, allocator, state.as_ref().map(|s| s.event_log))?;
+
+    epoch.enforce_le::<64>(dr, allocator, max)?;
+    liabilities.enforce_le::<64>(dr, allocator, max)?;
+
+    let domain = Element::constant(dr, Fp::from(DOMAIN_STATE));
+    let h1 = poseidon_hash(dr, &[domain, epoch.clone(), liabilities.clone(), nf_root])?;
+    let hash = poseidon_hash(dr, &[h1, note_root, event_log])?;
+    Ok(OpenedState { epoch, liabilities, hash })
 }
 
 /// Shared body of the three leaf steps.
@@ -115,28 +162,30 @@ fn value_step<'dr, D: Driver<'dr, F = Fp>>(
     let allocator = &mut Standard::new();
     let max = Fp::from(u64::MAX);
 
-    let prev = Element::alloc(dr, allocator, witness.as_ref().map(|w| Fp::from(w.prev_liabilities)))?;
-    let next = Element::alloc(dr, allocator, witness.as_ref().map(|w| Fp::from(w.next_liabilities)))?;
-    let state_prev = Element::alloc(dr, allocator, witness.as_ref().map(|w| w.state_prev))?;
-    let state_next = Element::alloc(dr, allocator, witness.as_ref().map(|w| w.state_next))?;
+    let prev = open_state(dr, allocator, witness.as_ref().map(|w| w.prev))?;
+    let next = open_state(dr, allocator, witness.as_ref().map(|w| w.next))?;
 
-    prev.enforce_le::<64>(dr, allocator, max)?;
-    next.enforce_le::<64>(dr, allocator, max)?;
+    // Epochs never go backwards: next - prev is a u64, so it did not wrap.
+    next.epoch.sub(dr, &prev.epoch).enforce_le::<64>(dr, allocator, max)?;
 
     match kind {
-        StepKind::Swap => prev.sub(dr, &next).enforce_zero(dr)?,
+        StepKind::Swap => prev.liabilities.sub(dr, &next.liabilities).enforce_zero(dr)?,
         StepKind::Mint | StepKind::Melt => {
             // amount = |next - prev| must be a non-zero u64. With both
             // liabilities range-checked, a wrong direction wraps the field and
             // fails the amount range check.
-            let amount = if kind == StepKind::Mint { next.sub(dr, &prev) } else { prev.sub(dr, &next) };
+            let amount = if kind == StepKind::Mint {
+                next.liabilities.sub(dr, &prev.liabilities)
+            } else {
+                prev.liabilities.sub(dr, &next.liabilities)
+            };
             amount.enforce_le::<64>(dr, allocator, max)?;
             amount.enforce_nonzero(dr)?;
         }
     }
 
     // Slot order: START_STATE, START_LIAB, END_STATE, END_LIAB, COUNT.
-    FixedVec::new(vec![state_prev, prev, state_next, next, Element::one()])
+    FixedVec::new(vec![prev.hash, prev.liabilities, next.hash, next.liabilities, Element::one()])
 }
 
 macro_rules! leaf_step {
@@ -171,7 +220,7 @@ macro_rules! leaf_step {
                 Self: 'dr,
             {
                 let out = value_step(dr, witness, $kind)?;
-                let data = header_value::<D>(&out);
+                let data = values_of(&out);
                 Ok((
                     (Encoded::from_gadget(()), Encoded::from_gadget(()), Encoded::from_gadget(out)),
                     data,
@@ -234,7 +283,7 @@ impl Step<Pasta> for FoldStep {
             r[END_LIAB].clone(),
             count,
         ])?;
-        let data = header_value::<D>(&out);
+        let data = values_of(&out);
         Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
     }
 }
@@ -255,76 +304,37 @@ fn app() -> Result<&'static App> {
     .map_err(|e| CircuitError::Plonk(format!("ragu application build: {e}")))
 }
 
-/// zashu field bytes (canonical little-endian Pallas base field) -> Ragu `Fp`.
-fn fp_from_bytes(bytes: &[u8; 32]) -> Result<Fp> {
-    Fp::from_bytes(*bytes)
-        .ok_or_else(|| CircuitError::InvalidWitness("non-canonical field element".into()))
-}
-
-fn u64_from_bytes(bytes: &[u8; 32]) -> Result<u64> {
-    if bytes[8..].iter().any(|b| *b != 0) {
-        return Err(CircuitError::ValueBounds);
-    }
-    Ok(u64::from_le_bytes(bytes[..8].try_into().expect("8 bytes")))
-}
-
-/// Recovers a leaf witness from a Halo 2 Mode A step proof's public inputs.
+/// Recovers a leaf witness from the state transition a Mode A step proof carries.
 fn leaf_from_step(step: &FoldedProof) -> Result<(StepKind, StepWitness)> {
-    let pi = &step.public_inputs;
-    let need = |n: usize| {
-        if pi.len() < n {
-            Err(CircuitError::InvalidWitness(format!(
-                "{:?} step has {} public inputs, expected at least {n}",
-                step.subcircuit,
-                pi.len()
+    let kind = match step.subcircuit {
+        SubcircuitId::MintStep => StepKind::Mint,
+        SubcircuitId::SwapStep => StepKind::Swap,
+        SubcircuitId::MeltStep => StepKind::Melt,
+        other => {
+            return Err(CircuitError::InvalidWitness(format!(
+                "cannot fold {other:?} with the Ragu backend"
             )))
-        } else {
-            Ok(())
         }
     };
-    match step.subcircuit {
-        // [prev_liabilities, next_liabilities, state_prev, state_next]
-        SubcircuitId::MintStep | SubcircuitId::MeltStep => {
-            need(4)?;
-            let kind = if step.subcircuit == SubcircuitId::MintStep { StepKind::Mint } else { StepKind::Melt };
-            Ok((
-                kind,
-                StepWitness {
-                    prev_liabilities: u64_from_bytes(&pi[0])?,
-                    next_liabilities: u64_from_bytes(&pi[1])?,
-                    state_prev: fp_from_bytes(&pi[2])?,
-                    state_next: fp_from_bytes(&pi[3])?,
-                },
-            ))
-        }
-        // [liabilities, state_prev, state_next, nf_root_prev, nf_root_next]
-        SubcircuitId::SwapStep => {
-            need(3)?;
-            let liabilities = u64_from_bytes(&pi[0])?;
-            Ok((
-                StepKind::Swap,
-                StepWitness {
-                    prev_liabilities: liabilities,
-                    next_liabilities: liabilities,
-                    state_prev: fp_from_bytes(&pi[1])?,
-                    state_next: fp_from_bytes(&pi[2])?,
-                },
-            ))
-        }
-        other => Err(CircuitError::InvalidWitness(format!(
-            "cannot fold {other:?} with the Ragu backend"
-        ))),
-    }
+    let t = step.transition.as_deref().ok_or_else(|| {
+        CircuitError::InvalidWitness(format!(
+            "{:?} step proof carries no state transition; the Ragu backend needs it",
+            step.subcircuit
+        ))
+    })?;
+    Ok((kind, StepWitness { prev: StateFields::of(&t.prev)?, next: StateFields::of(&t.next)? }))
 }
 
 /// Pre-checks a leaf natively so a bad step fails here with a clear error
 /// instead of producing a proof that only fails at verification.
 fn check_leaf(kind: StepKind, w: &StepWitness) -> Result<()> {
-    let ok = match kind {
-        StepKind::Mint => w.next_liabilities > w.prev_liabilities,
-        StepKind::Melt => w.next_liabilities < w.prev_liabilities,
-        StepKind::Swap => w.next_liabilities == w.prev_liabilities,
-    };
+    let (prev, next) = (w.prev.liabilities, w.next.liabilities);
+    let ok = w.next.epoch >= w.prev.epoch
+        && match kind {
+            StepKind::Mint => next > prev,
+            StepKind::Melt => next < prev,
+            StepKind::Swap => next == prev,
+        };
     if ok {
         Ok(())
     } else {
@@ -347,7 +357,7 @@ fn seed_leaf(app: &App, kind: StepKind, w: StepWitness) -> Result<TransitionPcd>
 ///
 /// Leaves are fused left to right, so at most two uncompressed proofs (about
 /// 34 MB each at rank 14) are alive at a time.
-pub fn fold(expected_start: &[u8; 32], expected_end: &[u8; 32], step_proofs: &[FoldedProof]) -> Result<FoldedProof> {
+pub fn fold(start_state: &MintState, end_state: &MintState, step_proofs: &[FoldedProof]) -> Result<FoldedProof> {
     if step_proofs.is_empty() {
         return Err(CircuitError::InvalidWitness("cannot fold empty proof batch".into()));
     }
@@ -355,7 +365,7 @@ pub fn fold(expected_start: &[u8; 32], expected_end: &[u8; 32], step_proofs: &[F
     for (i, (kind, w)) in leaves.iter().enumerate() {
         check_leaf(*kind, w)?;
         if let Some((_, next)) = leaves.get(i + 1) {
-            if w.state_next != next.state_prev || w.next_liabilities != next.prev_liabilities {
+            if w.next != next.prev {
                 return Err(CircuitError::InvalidWitness(format!(
                     "step {i} does not chain into step {}",
                     i + 1
@@ -364,7 +374,7 @@ pub fn fold(expected_start: &[u8; 32], expected_end: &[u8; 32], step_proofs: &[F
         }
     }
     let (first, last) = (&leaves[0].1, &leaves[leaves.len() - 1].1);
-    if first.state_prev != fp_from_bytes(expected_start)? || last.state_next != fp_from_bytes(expected_end)? {
+    if first.prev != StateFields::of(start_state)? || last.next != StateFields::of(end_state)? {
         return Err(CircuitError::InvalidWitness(
             "step proofs do not span the requested start and end states".into(),
         ));
@@ -395,6 +405,7 @@ pub fn fold(expected_start: &[u8; 32], expected_end: &[u8; 32], step_proofs: &[F
         public_inputs,
         ipa_proof: bytes,
         folded_children: step_proofs.len(),
+        transition: None,
     })
 }
 
