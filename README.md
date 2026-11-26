@@ -6,6 +6,8 @@
 
 **Zero-Knowledge Solvency & Shielded Ecash for Cashu**
 
+**Live demo:** [zashu.fly.dev](https://zashu.fly.dev) · **Try it:** [Glass-Box Playground](https://zashu.fly.dev/playground)
+
 **Zashu** *(ZK + Cashu)* is a zero-knowledge extension to the **Cashu** Chaumian ecash protocol, bringing **Ragu** (non-uniform Proof-Carrying Data / recursive folding) and **Tachyon** (prunable nullifier accumulators + oblivious synchronization) to Cashu mints and wallets.
 
 > **Built for Cashu, not against it.** Cashu's BDHKE blind signatures remain unbeatable for instant, sub-50ms mobile micropayments. Zashu runs **side-by-side inside the exact same Cashu mint**—sharing one Lightning backend and one unified Proof-of-Solvency.
@@ -45,6 +47,8 @@ Cashu excels at fast, private digital cash, but has four well-known structural t
 ---
 
 ## Quickstart: Interactive Web Playground & CLI
+
+No install needed to try it: the playground runs live at **[zashu.fly.dev/playground](https://zashu.fly.dev/playground)**. To run it locally:
 
 ```bash
 # 1. Start the unified Cashu + Zashu mint server & Web Playground
