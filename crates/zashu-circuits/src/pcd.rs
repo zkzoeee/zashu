@@ -31,6 +31,8 @@ pub enum SubcircuitId {
     FoldBatch,
     /// Mode A fold produced by the Ragu PCD backend (`ragu` feature).
     RaguFold,
+    /// Mode B transaction produced by the Ragu PCD backend (`ragu` feature).
+    RaguTx,
     ZkMint,
     ZkSwap,
     ZkMelt,

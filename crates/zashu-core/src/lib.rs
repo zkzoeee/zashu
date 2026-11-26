@@ -61,8 +61,14 @@ mod tests {
             r: [3u8; 32],
         };
         assert_eq!(note.commitment(), note.commitment());
-        assert_eq!(note.nullifier(&[9u8; 32]), note.nullifier(&[9u8; 32]));
-        assert_ne!(note.nullifier(&[9u8; 32]), note.nullifier(&[8u8; 32]));
+        assert_eq!(note.nullifier(), note.nullifier());
+        let mut other = note.clone();
+        other.rho = [4u8; 32];
+        assert_ne!(note.nullifier(), other.nullifier());
+        // The nullifier does not depend on who owns or spends the note.
+        let mut reowned = note.clone();
+        reowned.owner_pk = [7u8; 32];
+        assert_eq!(note.nullifier(), reowned.nullifier());
     }
 
     #[test]

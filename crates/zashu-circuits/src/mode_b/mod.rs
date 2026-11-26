@@ -11,13 +11,71 @@ use zashu_core::pedersen::ValueCommitment;
 use zashu_core::types::{Note, NoteCommitment, Nullifier};
 
 use crate::error::{CircuitError, Result};
+use crate::mode_a::FoldBackend;
 use crate::pcd::{FoldedProof, PcdEngine, SubcircuitId, DEFAULT_K};
 use crate::poseidon_chip::{MerkleInclusionCircuit, PoseidonChipConfig};
 use crate::predicates::{verify_predicate, PredicateWitness};
 use crate::range_check::RangeCheck64Config;
 
+#[cfg(feature = "ragu")]
+pub mod ragu_backend;
+
 pub const MAX_IO: usize = 4;
 pub const MERKLE_K: u32 = 13;
+
+/// The epoch a Ragu transaction proof's predicates were evaluated at (`None`
+/// for Halo 2 proofs, which do not prove predicates). A mint must reject a
+/// proof whose epoch is ahead of its own, or timelocks could be skipped.
+pub fn proof_epoch(proof: &FoldedProof) -> Option<u64> {
+    #[cfg(feature = "ragu")]
+    {
+        ragu_backend::proof_epoch(proof)
+    }
+    #[cfg(not(feature = "ragu"))]
+    {
+        let _ = proof;
+        None
+    }
+}
+
+/// Gate in front of the Halo 2 verifiers: a Ragu proof cannot be checked by
+/// them, and a mint running the Ragu backend does not accept Halo 2 proofs.
+fn require_halo2(proof: &FoldedProof) -> Result<()> {
+    if proof.subcircuit == SubcircuitId::RaguTx {
+        return Err(CircuitError::VerificationFailed(
+            "Ragu transaction proof, but the Ragu backend is not compiled in".into(),
+        ));
+    }
+    if FoldBackend::ragu_selected()? {
+        return Err(CircuitError::VerificationFailed(
+            "this mint only accepts Ragu transaction proofs".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// The epoch a transaction's predicates are evaluated at: the latest
+/// `current_epoch` any of its predicate witnesses names.
+#[cfg(feature = "ragu")]
+fn tx_epoch(inputs: &[InputNoteWitness<'_>]) -> u64 {
+    inputs
+        .iter()
+        .map(|i| match i.predicate {
+            PredicateWitness::Timelock { current_epoch, .. }
+            | PredicateWitness::PrivateHTLC { current_epoch, .. } => *current_epoch,
+            _ => 0,
+        })
+        .max()
+        .unwrap_or(0)
+}
+
+#[cfg(feature = "ragu")]
+fn ragu_inputs<'a>(inputs: &'a [InputNoteWitness<'a>]) -> Vec<ragu_backend::SpendInput<'a>> {
+    inputs
+        .iter()
+        .map(|i| ragu_backend::SpendInput { note: i.note, witness: i.witness, predicate: i.predicate })
+        .collect()
+}
 
 fn bytes_fp(b: &[u8; 32]) -> Fp {
     bytes_to_fp(b).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-b-fp", b))
@@ -434,6 +492,13 @@ pub fn prove_zk_mint(note: &Note, blind: Fq, public_amount: u64) -> Result<(Note
     }
     let cm = note.commitment();
     let cv = ValueCommitment::commit(note.value, blind);
+    #[cfg(feature = "ragu")]
+    if FoldBackend::ragu_selected()? {
+        let proof = ragu_backend::prove_tx(&[0u8; 32], 0, &[], &[note])?;
+        return Ok((cm, cv, proof));
+    }
+    #[cfg(not(feature = "ragu"))]
+    FoldBackend::ragu_selected()?;
     let cm_fp = bytes_fp(&cm.0);
     let cv_fp = bytes_fp(&cv.bytes);
 
@@ -457,11 +522,18 @@ pub fn prove_zk_mint(note: &Note, blind: Fq, public_amount: u64) -> Result<(Note
 
 pub fn prove_zk_shield(note: &Note, blind: Fq, bdhke_sum: u64) -> Result<(NoteCommitment, ValueCommitment, FoldedProof)> {
     let (cm, cv, mut proof) = prove_zk_mint(note, blind, bdhke_sum)?;
-    proof.subcircuit = SubcircuitId::ZkShield;
+    if proof.subcircuit == SubcircuitId::ZkMint {
+        proof.subcircuit = SubcircuitId::ZkShield;
+    }
     Ok((cm, cv, proof))
 }
 
 pub fn verify_zk_mint(proof: &FoldedProof, public_amount: u64, cm: &NoteCommitment, cv: &ValueCommitment) -> Result<()> {
+    #[cfg(feature = "ragu")]
+    if proof.subcircuit == SubcircuitId::RaguTx {
+        return ragu_backend::verify_tx(proof, None, &[], &[*cm], ragu_backend::Balance::In(public_amount));
+    }
+    require_halo2(proof)?;
     let expected = [
         zashu_core::field::fp_to_bytes(&Fp::from(public_amount)),
         zashu_core::field::fp_to_bytes(&bytes_fp(&cm.0)),
@@ -474,6 +546,9 @@ pub fn verify_zk_mint(proof: &FoldedProof, public_amount: u64, cm: &NoteCommitme
 }
 
 pub fn verify_zk_shield(proof: &FoldedProof, bdhke_sum: u64, cm: &NoteCommitment, cv: &ValueCommitment) -> Result<()> {
+    if proof.subcircuit == SubcircuitId::RaguTx {
+        return verify_zk_mint(proof, bdhke_sum, cm, cv);
+    }
     let mut inner = proof.clone();
     inner.subcircuit = SubcircuitId::ZkMint;
     verify_zk_mint(&inner, bdhke_sum, cm, cv)
@@ -518,8 +593,8 @@ pub fn prove_zk_swap(
         if !NoteAccumulator::verify_inclusion(anchor_root, &cm.0, inp.witness) {
             return Err(CircuitError::InvalidWitness("input note not in anchor_root".into()));
         }
-        let sk_auth = verify_predicate(inp.note, inp.predicate)?;
-        let nf = inp.note.nullifier(&sk_auth);
+        verify_predicate(inp.note, inp.predicate)?;
+        let nf = inp.note.nullifier();
         nfs.push(nf);
         nf_fps[i] = bytes_fp(&nf.0);
         in_vals[i] = inp.note.value;
@@ -540,6 +615,15 @@ pub fn prove_zk_swap(
     if sum_in != sum_out || !ValueCommitment::verify_balance(&in_cvs, &out_cvs)? {
         return Err(CircuitError::ValueBounds);
     }
+
+    #[cfg(feature = "ragu")]
+    if FoldBackend::ragu_selected()? {
+        let out_notes: Vec<&Note> = outputs.iter().map(|o| o.note).collect();
+        let proof = ragu_backend::prove_tx(anchor_root, tx_epoch(inputs), &ragu_inputs(inputs), &out_notes)?;
+        return Ok((nfs, cms, out_cvs, proof));
+    }
+    #[cfg(not(feature = "ragu"))]
+    FoldBackend::ragu_selected()?;
 
     let anc_fp = bytes_fp(anchor_root);
     let circuit = ZkSwapCircuit {
@@ -581,6 +665,11 @@ pub fn verify_zk_swap(
     if !in_cvs.is_empty() && !ValueCommitment::verify_balance(in_cvs, out_cvs)? {
         return Err(CircuitError::VerificationFailed("pedersen balance mismatch".into()));
     }
+    #[cfg(feature = "ragu")]
+    if proof.subcircuit == SubcircuitId::RaguTx {
+        return ragu_backend::verify_tx(proof, Some(anchor_root), nullifiers, out_cms, ragu_backend::Balance::Zero);
+    }
+    require_halo2(proof)?;
     let mut expected = vec![zashu_core::field::fp_to_bytes(&bytes_fp(anchor_root))];
     for i in 0..MAX_IO {
         let fp = nullifiers.get(i).map(|n| bytes_fp(&n.0)).unwrap_or(Fp::ZERO);
@@ -619,8 +708,8 @@ pub fn prove_zk_melt(
         if !NoteAccumulator::verify_inclusion(anchor_root, &cm.0, inp.witness) {
             return Err(CircuitError::InvalidWitness("melt input note not in anchor_root".into()));
         }
-        let sk_auth = verify_predicate(inp.note, inp.predicate)?;
-        let nf = inp.note.nullifier(&sk_auth);
+        verify_predicate(inp.note, inp.predicate)?;
+        let nf = inp.note.nullifier();
         nfs.push(nf);
         nf_fps[i] = bytes_fp(&nf.0);
         in_vals[i] = inp.note.value;
@@ -640,6 +729,15 @@ pub fn prove_zk_melt(
     if sum_in != (public_melt_amount as u128 + ch_val as u128) {
         return Err(CircuitError::ValueBounds);
     }
+
+    #[cfg(feature = "ragu")]
+    if FoldBackend::ragu_selected()? {
+        let change: Vec<&Note> = change_note.iter().map(|(n, _)| *n).collect();
+        let proof = ragu_backend::prove_tx(anchor_root, tx_epoch(inputs), &ragu_inputs(inputs), &change)?;
+        return Ok((nfs, ch_out, proof));
+    }
+    #[cfg(not(feature = "ragu"))]
+    FoldBackend::ragu_selected()?;
 
     let anc_fp = bytes_fp(anchor_root);
     let circuit = ZkMeltCircuit {
@@ -679,7 +777,9 @@ pub fn prove_zk_unshield(
     change_note: Option<(&Note, Fq)>,
 ) -> Result<(Vec<Nullifier>, Option<(NoteCommitment, ValueCommitment)>, FoldedProof)> {
     let (nfs, ch, mut proof) = prove_zk_melt(anchor_root, inputs, unshield_amount, change_note)?;
-    proof.subcircuit = SubcircuitId::ZkUnshield;
+    if proof.subcircuit == SubcircuitId::ZkMelt {
+        proof.subcircuit = SubcircuitId::ZkUnshield;
+    }
     Ok((nfs, ch, proof))
 }
 
@@ -690,6 +790,18 @@ pub fn verify_zk_melt(
     change_cm: Option<&NoteCommitment>,
     nullifiers: &[Nullifier],
 ) -> Result<()> {
+    #[cfg(feature = "ragu")]
+    if proof.subcircuit == SubcircuitId::RaguTx {
+        let change: Vec<NoteCommitment> = change_cm.into_iter().copied().collect();
+        return ragu_backend::verify_tx(
+            proof,
+            Some(anchor_root),
+            nullifiers,
+            &change,
+            ragu_backend::Balance::Out(public_melt_amount),
+        );
+    }
+    require_halo2(proof)?;
     let mut expected = vec![
         zashu_core::field::fp_to_bytes(&bytes_fp(anchor_root)),
         zashu_core::field::fp_to_bytes(&Fp::from(public_melt_amount)),
@@ -712,6 +824,9 @@ pub fn verify_zk_unshield(
     change_cm: Option<&NoteCommitment>,
     nullifiers: &[Nullifier],
 ) -> Result<()> {
+    if proof.subcircuit == SubcircuitId::RaguTx {
+        return verify_zk_melt(proof, anchor_root, unshield_amount, change_cm, nullifiers);
+    }
     let mut inner = proof.clone();
     inner.subcircuit = SubcircuitId::ZkMelt;
     verify_zk_melt(&inner, anchor_root, unshield_amount, change_cm, nullifiers)

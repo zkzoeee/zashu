@@ -55,8 +55,9 @@ impl Note {
         ))
     }
 
-    pub fn nullifier(&self, sk_auth: &[u8; 32]) -> Nullifier {
-        Nullifier(hash_nullifier(sk_auth, &self.rho))
+    /// The note's single nullifier; see [`hash_nullifier`].
+    pub fn nullifier(&self) -> Nullifier {
+        Nullifier(hash_nullifier(&self.r, &self.rho))
     }
 }
 

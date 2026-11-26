@@ -139,7 +139,7 @@ fn mode_b_lifecycle_interop_stealth_and_cross_mint_swap() {
     assert!(mint_a
         .zk_swap(ZkSwapRequest {
             anchor_root: mint_res.state.note_acc_root,
-            nullifiers: vec![n137.nullifier(&sk_alice)],
+            nullifiers: vec![n137.nullifier()],
             output_commitments: vec![],
             output_value_commitments: vec![],
             proof: p_swap.to_base64().unwrap(),

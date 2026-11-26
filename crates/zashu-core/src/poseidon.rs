@@ -11,6 +11,42 @@ pub const DOMAIN_MELT: u64 = 0x06;
 pub const DOMAIN_PREDICATE: u64 = 0x07;
 pub const DOMAIN_STEALTH: u64 = 0x08;
 
+/// Field image of a public key inside note commitments and predicate
+/// parameters: `Poseidon2(x, y)` of the affine Pallas point.
+///
+/// Circuits can recompute this from a secret key (one scalar multiplication
+/// and one hash), which is what lets a spend prove key ownership in-circuit.
+/// Bytes that are not a valid non-identity point fall back to a BLAKE2b
+/// hash-to-field; such a key can never be proven in-circuit.
+pub fn pk_to_fp(pk: &[u8; 32]) -> Fp {
+    use pasta_curves::arithmetic::CurveAffine;
+    use pasta_curves::group::GroupEncoding;
+    let affine: Option<pasta_curves::pallas::Affine> =
+        Option::from(pasta_curves::pallas::Affine::from_bytes(pk));
+    let coords = affine.and_then(|a| Option::from(a.coordinates()));
+    match coords {
+        Some(c) => {
+            let c: pasta_curves::arithmetic::Coordinates<pasta_curves::pallas::Affine> = c;
+            poseidon_2(*c.x(), *c.y())
+        }
+        None => hash_bytes_to_fp(b"zashu-pk", pk),
+    }
+}
+
+/// Note randomness `r` and serial `rho` as field elements, as [`hash_note`]
+/// and [`hash_nullifier`] absorb them.
+pub fn note_rho_r_fields(rho: &[u8; 32], r: &[u8; 32]) -> (Fp, Fp) {
+    let rho_fp = bytes_to_fp(rho).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-rho", rho));
+    let r_fp = bytes_to_fp(r).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-r", r));
+    (rho_fp, r_fp)
+}
+
+/// A predicate parameter hash as the field element [`hash_note`] absorbs.
+pub fn predicate_params_to_fp(predicate_params_hash: &[u8; 32]) -> Fp {
+    bytes_to_fp(predicate_params_hash)
+        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-pred", predicate_params_hash))
+}
+
 pub fn poseidon_2(a: Fp, b: Fp) -> Fp {
     Hash::<Fp, P128Pow5T3, ConstantLength<2>, 3, 2>::init().hash([a, b])
 }
@@ -42,11 +78,9 @@ pub fn hash_note(
     rho: &[u8; 32],
     r: &[u8; 32],
 ) -> [u8; 32] {
-    let pk_fp = hash_bytes_to_fp(b"zashu-pk", owner_pk);
-    let pred_fp = bytes_to_fp(predicate_params_hash)
-        .unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-pred", predicate_params_hash));
-    let rho_fp = bytes_to_fp(rho).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-rho", rho));
-    let r_fp = bytes_to_fp(r).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-r", r));
+    let pk_fp = pk_to_fp(owner_pk);
+    let pred_fp = predicate_params_to_fp(predicate_params_hash);
+    let (rho_fp, r_fp) = note_rho_r_fields(rho, r);
 
     let cm = poseidon_7([
         fp_from_u64(DOMAIN_NOTE),
@@ -60,10 +94,16 @@ pub fn hash_note(
     fp_to_bytes(&cm)
 }
 
-pub fn hash_nullifier(sk_or_auth: &[u8; 32], rho: &[u8; 32]) -> [u8; 32] {
-    let sk_fp = hash_bytes_to_fp(b"zashu-sk", sk_or_auth);
-    let rho_fp = bytes_to_fp(rho).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-rho", rho));
-    fp_to_bytes(&poseidon_3(fp_from_u64(DOMAIN_NF), sk_fp, rho_fp))
+/// `Poseidon3(DOMAIN_NF, r, rho)`.
+///
+/// The nullifier depends only on the note opening, never on which key or
+/// predicate branch spends it, so a note has exactly one nullifier. (Keying it
+/// on the spending key let a multi-path note, such as an HTLC, be spent once
+/// per path.) The trade-off: whoever created the note knows its opening and
+/// can tell when it is spent.
+pub fn hash_nullifier(r: &[u8; 32], rho: &[u8; 32]) -> [u8; 32] {
+    let (rho_fp, r_fp) = note_rho_r_fields(rho, r);
+    fp_to_bytes(&poseidon_3(fp_from_u64(DOMAIN_NF), r_fp, rho_fp))
 }
 
 /// The three accumulator/log roots of a mint state as field elements, exactly as

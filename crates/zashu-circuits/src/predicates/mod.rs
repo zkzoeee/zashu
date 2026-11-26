@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
-use zashu_core::field::{bytes_to_fq, hash_bytes_to_fq, PallasPoint};
-use zashu_core::poseidon::{hash_bytes_to_fp_stealth, hash_predicate_params};
+use zashu_core::field::{
+    bytes_to_fp, bytes_to_fq, fp_from_u64, fp_to_bytes, hash_bytes_to_fp, hash_bytes_to_fq, Fp, PallasPoint,
+};
+use zashu_core::poseidon::{
+    hash_bytes_to_fp_stealth, hash_predicate_params, pk_to_fp, poseidon_3, poseidon_4, poseidon_7,
+    DOMAIN_PREDICATE,
+};
 use zashu_core::stealth::PointBytesExt;
 use zashu_core::types::{Note, PredicateId};
 
@@ -51,10 +56,20 @@ pub fn htlc_hashlock(preimage: &[u8; 32]) -> [u8; 32] {
     hash_bytes_to_fp_stealth(preimage)
 }
 
-pub fn compute_p2pk_params(target_pk: &[u8; 32]) -> [u8; 32] {
-    hash_predicate_params(&[b"p2pk", target_pk])
+// Predicate parameter hashes. Except for multisig they are Poseidon hashes of
+// field elements (keys enter as `pk_to_fp`), so a circuit can recompute them.
+
+fn pred_tag(id: PredicateId) -> Fp {
+    fp_from_u64(id as u8 as u64)
 }
 
+/// `Poseidon3(DOMAIN_PREDICATE, P2PK, pk_to_fp(target_pk))`
+pub fn compute_p2pk_params(target_pk: &[u8; 32]) -> [u8; 32] {
+    fp_to_bytes(&poseidon_3(fp_from_u64(DOMAIN_PREDICATE), pred_tag(PredicateId::P2PK), pk_to_fp(target_pk)))
+}
+
+/// Multisig parameters keep the byte-oriented hash: `t`-of-`n` is not yet
+/// expressed as an in-circuit predicate.
 pub fn compute_multisig_params(threshold: u8, pubkeys: &[[u8; 32]]) -> [u8; 32] {
     let mut parts: Vec<&[u8]> = Vec::with_capacity(pubkeys.len() + 2);
     let t_slice = [threshold];
@@ -68,25 +83,47 @@ pub fn compute_multisig_params(threshold: u8, pubkeys: &[[u8; 32]]) -> [u8; 32] 
     hash_predicate_params(&parts)
 }
 
+/// `Poseidon4(DOMAIN_PREDICATE, Timelock, lock_epoch, pk_to_fp(owner_pk))`
 pub fn compute_timelock_params(lock_epoch: u64, owner_pk: &[u8; 32]) -> [u8; 32] {
-    let epoch_bytes = lock_epoch.to_le_bytes();
-    hash_predicate_params(&[b"timelock", &epoch_bytes, owner_pk])
+    fp_to_bytes(&poseidon_4(
+        fp_from_u64(DOMAIN_PREDICATE),
+        pred_tag(PredicateId::Timelock),
+        fp_from_u64(lock_epoch),
+        pk_to_fp(owner_pk),
+    ))
 }
 
+/// `Poseidon7(DOMAIN_PREDICATE, PrivateHTLC, hashlock, pk_to_fp(receiver), pk_to_fp(refund), expiry_epoch, 0)`
 pub fn compute_htlc_params(
     hashlock: &[u8; 32],
     pk_receiver: &[u8; 32],
     pk_refund: &[u8; 32],
     expiry_epoch: u64,
 ) -> [u8; 32] {
-    let exp_bytes = expiry_epoch.to_le_bytes();
-    hash_predicate_params(&[b"htlc", hashlock, pk_receiver, pk_refund, &exp_bytes])
+    fp_to_bytes(&poseidon_7([
+        fp_from_u64(DOMAIN_PREDICATE),
+        pred_tag(PredicateId::PrivateHTLC),
+        hashlock_to_fp(hashlock),
+        pk_to_fp(pk_receiver),
+        pk_to_fp(pk_refund),
+        fp_from_u64(expiry_epoch),
+        fp_from_u64(0),
+    ]))
+}
+
+/// A hashlock as the field element [`compute_htlc_params`] absorbs.
+pub fn hashlock_to_fp(hashlock: &[u8; 32]) -> Fp {
+    bytes_to_fp(hashlock).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-hashlock", hashlock))
+}
+
+/// The secret scalar a key witness stands for (`pk = [scalar] G`).
+pub fn sk_to_scalar(sk_bytes: &[u8; 32]) -> zashu_core::field::Fq {
+    bytes_to_fq(sk_bytes).unwrap_or_else(|_| hash_bytes_to_fq(b"zashu-sk-fq", sk_bytes))
 }
 
 fn check_sk_matches_pk(sk_bytes: &[u8; 32], expected_pk: &[u8; 32]) -> bool {
     use group::Group;
-    let sk_fq = bytes_to_fq(sk_bytes)
-        .unwrap_or_else(|_| hash_bytes_to_fq(b"zashu-sk-fq", sk_bytes));
+    let sk_fq = sk_to_scalar(sk_bytes);
     let derived = (PallasPoint::generator() * sk_fq).to_affine_bytes();
     &derived == expected_pk
 }

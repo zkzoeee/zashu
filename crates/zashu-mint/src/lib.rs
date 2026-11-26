@@ -17,7 +17,7 @@ use zashu_circuits::mode_a::{
     IncrementalFold,
 };
 use zashu_circuits::mode_b::{
-    verify_zk_melt, verify_zk_mint, verify_zk_shield, verify_zk_swap, verify_zk_unshield,
+    proof_epoch, verify_zk_melt, verify_zk_mint, verify_zk_shield, verify_zk_swap, verify_zk_unshield,
 };
 use zashu_circuits::FoldedProof;
 use zashu_core::field::hex32;
@@ -274,6 +274,7 @@ impl ZashuMint {
     pub fn zk_mint(&mut self, req: ZkMintRequest) -> Result<ZkMintResponse> {
         let proof = FoldedProof::from_base64(&req.proof)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.check_proof_epoch(&proof)?;
         verify_zk_mint(&proof, req.amount, &req.cm, &req.cv)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
 
@@ -313,6 +314,7 @@ impl ZashuMint {
         }
         let proof = FoldedProof::from_base64(&req.proof)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.check_proof_epoch(&proof)?;
         verify_zk_swap(
             &proof,
             &req.anchor_root,
@@ -365,6 +367,7 @@ impl ZashuMint {
         }
         let proof = FoldedProof::from_base64(&req.proof)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.check_proof_epoch(&proof)?;
         verify_zk_melt(
             &proof,
             &req.anchor_root,
@@ -426,6 +429,7 @@ impl ZashuMint {
 
         let proof = FoldedProof::from_base64(&req.proof)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.check_proof_epoch(&proof)?;
         verify_zk_shield(&proof, sum, &req.cm, &req.cv)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
 
@@ -467,6 +471,7 @@ impl ZashuMint {
         }
         let proof = FoldedProof::from_base64(&req.proof)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.check_proof_epoch(&proof)?;
         verify_zk_unshield(
             &proof,
             &req.anchor_root,
@@ -543,6 +548,18 @@ impl ZashuMint {
             new_commitments,
             latest_state: self.state.clone(),
             mint_signature: self.sign_state(&self.state),
+        }
+    }
+
+    /// A Ragu transaction proof states the epoch its predicates (timelocks,
+    /// HTLC expiry) were evaluated at; it must not be ahead of this mint.
+    fn check_proof_epoch(&self, proof: &FoldedProof) -> Result<()> {
+        match proof_epoch(proof) {
+            Some(epoch) if epoch > self.state.epoch => Err(zashu_circuits::CircuitError::VerificationFailed(
+                format!("proof evaluated at epoch {epoch}, mint is at epoch {}", self.state.epoch),
+            )
+            .into()),
+            _ => Ok(()),
         }
     }
 

@@ -18,9 +18,13 @@ use crate::range_check::RangeCheck64Config;
 pub mod ragu_backend;
 
 /// Environment variable read by [`FoldBackend::from_env`]: `halo2` (default) or `ragu`.
+pub const PCD_BACKEND_ENV: &str = "ZASHU_PCD_BACKEND";
+/// Older name for [`PCD_BACKEND_ENV`], still honoured when that one is unset.
 pub const FOLD_BACKEND_ENV: &str = "ZASHU_FOLD_BACKEND";
 
-/// Proof system used to fold Mode A step proofs into the `NUTZ-1` proof.
+/// Proof system used to fold Mode A step proofs into the `NUTZ-1` proof and to
+/// prove Mode B transactions. A mint running the Ragu backend also refuses
+/// Halo 2 Mode B proofs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FoldBackend {
     /// Steps are verified natively by the folder; the folded Halo 2 proof only
@@ -33,17 +37,34 @@ pub enum FoldBackend {
 }
 
 impl FoldBackend {
-    /// Reads [`FOLD_BACKEND_ENV`]. Unset or empty selects Halo 2.
+    /// Reads [`PCD_BACKEND_ENV`], falling back to [`FOLD_BACKEND_ENV`]. Unset
+    /// or empty selects Halo 2.
     pub fn from_env() -> Result<Self> {
-        match std::env::var(FOLD_BACKEND_ENV) {
-            Err(_) => Ok(Self::Halo2),
-            Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
-                "" | "halo2" => Ok(Self::Halo2),
-                "ragu" => Ok(Self::Ragu),
-                other => Err(CircuitError::InvalidWitness(format!(
-                    "{FOLD_BACKEND_ENV}={other:?}: expected \"halo2\" or \"ragu\""
-                ))),
+        let (name, value) = match std::env::var(PCD_BACKEND_ENV) {
+            Ok(v) => (PCD_BACKEND_ENV, v),
+            Err(_) => match std::env::var(FOLD_BACKEND_ENV) {
+                Ok(v) => (FOLD_BACKEND_ENV, v),
+                Err(_) => return Ok(Self::Halo2),
             },
+        };
+        match value.trim().to_ascii_lowercase().as_str() {
+            "" | "halo2" => Ok(Self::Halo2),
+            "ragu" => Ok(Self::Ragu),
+            other => Err(CircuitError::InvalidWitness(format!(
+                "{name}={other:?}: expected \"halo2\" or \"ragu\""
+            ))),
+        }
+    }
+
+    /// Whether the Ragu backend is selected, erroring if it is selected but
+    /// was not compiled in.
+    pub fn ragu_selected() -> Result<bool> {
+        match Self::from_env()? {
+            Self::Halo2 => Ok(false),
+            #[cfg(feature = "ragu")]
+            Self::Ragu => Ok(true),
+            #[cfg(not(feature = "ragu"))]
+            Self::Ragu => Err(ragu_unavailable()),
         }
     }
 }
@@ -106,7 +127,7 @@ impl IncrementalFold {
 }
 
 #[cfg(not(feature = "ragu"))]
-fn ragu_unavailable() -> CircuitError {
+pub(crate) fn ragu_unavailable() -> CircuitError {
     CircuitError::VerificationFailed(
         "Ragu fold backend not compiled in; rebuild with `--features ragu`".into(),
     )
