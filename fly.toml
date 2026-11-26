@@ -1,0 +1,43 @@
+# Fly.io config for the Zashu landing page + playground (zashu-mint).
+# App names are global on Fly: change `app` if "zashu" is taken.
+app = "zashu"
+primary_region = "sin"
+
+# Mint and playground state live in memory, and each tab's session is
+# pinned to one process. Run exactly ONE machine (see DEPLOY.md).
+kill_signal = "SIGINT"
+kill_timeout = "5s"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Scale to zero when idle, wake on the next request.
+  # "suspend" snapshots RAM, so in-memory playground sessions survive and
+  # wake-up is faster. Fly falls back to a normal stop if it can't suspend.
+  # Use "stop" instead if you add swap (suspend doesn't support swap).
+  auto_stop_machines = "suspend"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "requests"
+    soft_limit = 50
+    hard_limit = 100
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval = "30s"
+    method = "GET"
+    path = "/v1/zk/info"
+    timeout = "5s"
+
+# ZK proving is CPU- and memory-heavy (~0.5 GB peak per proof, multi-threaded).
+# 2 GB leaves room for a few visitors proving at once and is the suspend cap.
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 4
+  memory = "2gb"

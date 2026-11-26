@@ -1,0 +1,12 @@
+# Only the Rust workspace and the embedded assets are needed to build zashu-mint.
+target
+video
+NUTZ
+scripts
+*.md
+.git
+.DS_Store
+*.sqlite
+zashu-wallet.json
+fly.toml
+Dockerfile

@@ -85,6 +85,33 @@ async fn main() -> Result<()> {
     let app = mint_router(shared).merge(playground_router(playground));
     tracing::info!("Web Playground available at http://{}/", cli.bind);
     let listener = TcpListener::bind(cli.bind).await?;
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    tracing::info!("zashu-mint stopped");
     Ok(())
+}
+
+/// Resolves on SIGINT or SIGTERM (Ctrl-C, `docker stop`, Fly auto-stop), so
+/// in-flight requests finish before exit. Needed when running as PID 1, where
+/// the kernel ignores signals that have no handler installed.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    let term = async {
+        if let Ok(mut s) =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+        {
+            s.recv().await;
+        }
+    };
+    #[cfg(not(unix))]
+    let term = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = term => {},
+    }
+    tracing::info!("shutdown signal received, draining connections");
 }
