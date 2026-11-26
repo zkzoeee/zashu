@@ -2587,6 +2587,7 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "bitcoin",
+ "clap",
  "ff",
  "group",
  "hex",

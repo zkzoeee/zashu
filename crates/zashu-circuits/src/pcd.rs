@@ -33,6 +33,7 @@ pub enum SubcircuitId {
     ZkMelt,
     ZkShield,
     ZkUnshield,
+    MerkleInclusion,
     Predicate(u8),
 }
 

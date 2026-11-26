@@ -9,6 +9,7 @@ anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true
 bitcoin.workspace = true
+clap.workspace = true
 hex.workspace = true
 pasta_curves.workspace = true
 rand.workspace = true

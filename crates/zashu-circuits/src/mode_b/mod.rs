@@ -12,6 +12,7 @@ use zashu_core::types::{Note, NoteCommitment, Nullifier};
 
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, PcdEngine, SubcircuitId, DEFAULT_K};
+use crate::poseidon_chip::MerkleInclusionCircuit;
 use crate::predicates::{verify_predicate, PredicateWitness};
 use crate::range_check::RangeCheck64Config;
 
@@ -619,3 +620,56 @@ pub fn balance_blinding(in_blinds: &[Fq], out_blinds_except_last: &[Fq]) -> Fq {
 }
 
 const _: fn(&Fq) -> [u8; 32] = fq_to_bytes;
+
+pub const MERKLE_K: u32 = 13;
+
+/// Generates a Halo 2 Pasta/IPA proof of 32-level Poseidon Merkle inclusion (`k = 13`).
+pub fn prove_merkle_inclusion(
+    leaf: &[u8; 32],
+    root: &[u8; 32],
+    witness: &InclusionWitness,
+) -> Result<FoldedProof> {
+    if witness.siblings.len() != zashu_acc::ACC_DEPTH {
+        return Err(CircuitError::InvalidWitness("bad sibling length".into()));
+    }
+    let leaf_fp = bytes_fp(leaf);
+    let root_fp = bytes_fp(root);
+    let mut sibs = [Value::unknown(); zashu_acc::ACC_DEPTH];
+    for (i, s) in witness.siblings.iter().enumerate() {
+        sibs[i] = Value::known(bytes_fp(s));
+    }
+    let circuit = MerkleInclusionCircuit {
+        leaf: Value::known(leaf_fp),
+        root: Value::known(root_fp),
+        siblings: sibs,
+        leaf_index: Value::known(witness.leaf_index),
+    };
+    PcdEngine::global().prove(
+        SubcircuitId::MerkleInclusion,
+        MERKLE_K,
+        &MerkleInclusionCircuit::default(),
+        circuit,
+        &[leaf_fp, root_fp],
+        1,
+    )
+}
+
+/// Verifies a Halo 2 Pasta/IPA 32-level Poseidon Merkle inclusion proof.
+pub fn verify_merkle_inclusion(
+    proof: &FoldedProof,
+    leaf: &[u8; 32],
+    root: &[u8; 32],
+) -> Result<()> {
+    let expected = [
+        zashu_core::field::fp_to_bytes(&bytes_fp(leaf)),
+        zashu_core::field::fp_to_bytes(&bytes_fp(root)),
+    ];
+    if proof.public_inputs != expected {
+        return Err(CircuitError::VerificationFailed("merkle inclusion public input mismatch".into()));
+    }
+    PcdEngine::global().verify(
+        SubcircuitId::MerkleInclusion,
+        &MerkleInclusionCircuit::default(),
+        proof,
+    )
+}

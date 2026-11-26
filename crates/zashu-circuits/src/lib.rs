@@ -2,6 +2,7 @@ pub mod error;
 pub mod mode_a;
 pub mod mode_b;
 pub mod pcd;
+pub mod poseidon_chip;
 pub mod predicates;
 pub mod range_check;
 
@@ -294,5 +295,22 @@ mod tests {
 
     fn sk_dummy() -> [u8; 32] {
         fq_to_bytes(&Fq::ONE)
+    }
+
+    #[test]
+    fn in_circuit_poseidon_merkle_inclusion() {
+        let mut acc = NoteAccumulator::new(8);
+        let cm1 = zashu_core::field::fp_to_bytes(&zashu_core::field::Fp::from(111u64));
+        let cm2 = zashu_core::field::fp_to_bytes(&zashu_core::field::Fp::from(222u64));
+        let idx1 = acc.insert(cm1).unwrap();
+        let _idx2 = acc.insert(cm2).unwrap();
+        let root = acc.root();
+        let w1 = acc.witness(idx1).unwrap();
+
+        let proof = crate::mode_b::prove_merkle_inclusion(&cm1, &root, &w1).unwrap();
+        crate::mode_b::verify_merkle_inclusion(&proof, &cm1, &root).unwrap();
+
+        // Tampered leaf must fail
+        assert!(crate::mode_b::verify_merkle_inclusion(&proof, &cm2, &root).is_err());
     }
 }
