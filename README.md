@@ -1,37 +1,89 @@
+<p align="center">
+  <img src="./assets/zashi-mascot.jpg" alt="Zashi — Zashu Mascot" width="160" style="border-radius: 16px;" />
+</p>
+
 # Zashu
 
-**Zashu** *(ZK + Cashu)* brings **Ragu non-uniform PCD / recursive folding** and **Tachyon prunable accumulators + oblivious sync** to Chaumian ecash (**Cashu** and **Fedimint**).
+**Zero-Knowledge Solvency & Shielded Ecash for Cashu**
 
-## Two Complementary Modes
+**Zashu** *(ZK + Cashu)* is a zero-knowledge extension to the **Cashu** Chaumian ecash protocol, bringing **Ragu** (non-uniform Proof-Carrying Data / recursive folding) and **Tachyon** (prunable nullifier accumulators + oblivious synchronization) to Cashu mints and wallets.
 
-* **Mode A (`NUTZ-1`) — Verifiable Mint Solvency:** Drop-in sidecar for existing Cashu (CDK) and Fedimint mints. Continuously folds `mint`/`swap`/`melt` accounting into a constant-size ZK proof that `total_liabilities <= reserves`, with prunable nullifier accumulators and zero changes to legacy Cashu wallets.
-* **Mode B (`NUTZ-2`, `NUTZ-3`, `NUTZ-4`) — Full ZK-Ecash:** Arbitrary hidden amounts (no power-of-2 splitting), hidden programmable spending conditions (`P2PK`, `Multisig`, `Timelock`, `PrivateHTLC`, `CrossMintSwap`), oblivious mobile witness sync, and double-spend-proof stealth async P2P receives—interoperating zero-fee with standard Cashu inside the same mint via `/v1/zk/shield` and `/v1/zk/unshield`.
+> **Built for Cashu, not against it.** Cashu's BDHKE blind signatures remain unbeatable for instant, sub-50ms mobile micropayments. Zashu runs **side-by-side inside the exact same Cashu mint**—sharing one Lightning backend and one unified Proof-of-Solvency.
 
-## Quickstart (Web Playground & Local / Signet Demo)
+---
+
+## What Zashu Contributes to the Cashu Ecosystem
+
+Cashu excels at fast, private digital cash, but has four well-known structural trade-offs. Zashu addresses each via four modular `NUTZ` extensions:
+
+| Extension | What It Adds to Cashu | Works with Existing Cashu Wallets? |
+| :--- | :--- | :--- |
+| **[`NUTZ-1`](./NUTZ/NUTZ-1.md)** | **Verifiable Mint Solvency & Prunable Storage** — Continuously folds `mint`/`swap`/`melt` accounting into a constant-size ~16 KB ZK proof (`total_liabilities <= L1 Bitcoin reserves`), verified in **~1 ms**. Prunes old spent-secret storage via Tachyon accumulators. | **Yes (100% drop-in)** via CDK sidecar (`GET /v1/solvency`) |
+| **[`NUTZ-2`](./NUTZ/NUTZ-2.md)** | **Arbitrary-Amount Shielded Notes** — Replaces power-of-2 splits (`128 + 8 + 1`) with 1 single Pedersen-committed note (`137 sats`). Unified `k=13` Halo 2 proof verifies 32-level Poseidon Merkle inclusion + 64-bit range + value balance. | **Coexists** via zero-fee `/v1/zk/shield` & `/v1/zk/unshield` |
+| **[`NUTZ-3`](./NUTZ/NUTZ-3.md)** | **Offline-Safe Stealth Receives & Oblivious Sync** — Pay a friend's `zsp1...` stealth address while they are offline (double-spend-proof once confirmed). Wallets refresh witnesses via `GET /v1/zk/sync` without revealing which notes they own. | Opt-in Zashu wallet feature |
+| **[`NUTZ-4`](./NUTZ/NUTZ-4.md)** | **Hidden Programmable Policies & Cross-Mint Swaps** — Hides `P2PK`, `Multisig`, `Timelock`, and `PrivateHTLC` conditions inside Ragu non-uniform subcircuits so the mint never sees your spending policy or hashlocks. | Opt-in Zashu wallet feature |
+
+---
+
+## How Cashu & Zashu Work Together
+
+1. **Everyday Spending (Standard Cashu):** Keep small balances in fast BDHKE tokens for <50ms coffee payments.
+2. **Zero-Fee Shielding (`/v1/zk/shield`):** Merge power-of-2 Cashu proofs (`128 + 8 + 1`) into **1 shielded Zashu note (`137 sats`)** inside the same mint with zero Lightning fees.
+3. **Private Transfers & Swaps:** Send arbitrary amounts, pay offline recipients via `zsp1...` stealth keys, or execute private cross-mint atomic swaps (`PrivateHTLC`).
+4. **Unshield Anywhere (`/v1/zk/unshield`):** Convert back to legacy Cashu tokens or melt over Lightning to pay any existing Cashu or Lightning wallet.
+5. **Continuous Public Audit (`GET /v1/solvency`):** One unified `NUTZ-1` proof audits *both* standard BDHKE and Zashu shielded liabilities against the mint's Bitcoin Taproot reserves.
+
+---
+
+## Key Use Cases
+
+* **Public Mint Accountability:** Anyone (or any wallet) can run `zashu-auditor` against a Cashu mint + Esplora (`mempool.space`) to verify in ~1 ms that the mint is not running a fractional reserve.
+* **Larger / Savings Ecash Balances:** Hold arbitrary satoshi amounts without power-of-2 denomination fingerprinting.
+* **Async P2P Payments:** Send ecash over Nostr or QR to offline recipients without the online `/v1/swap` double-spend race.
+* **Private Cross-Mint Liquidity:** Atomic swaps across independent Cashu mints via hidden HTLCs (`0x04`) without leaking amounts or linking identities.
+
+---
+
+## Quickstart: Interactive Web Playground & CLI
 
 ```bash
-# 1. Start the unified Mode A + Mode B mint server + Interactive Web Playground
+# 1. Start the unified Cashu + Zashu mint server & Web Playground
 cargo run --release -p zashu-mint
-# Open http://127.0.0.1:8080 in your browser!
+# Landing Page:           http://127.0.0.1:8080/
+# Interactive Playground: http://127.0.0.1:8080/playground
 
-# 2. In another terminal: audit mint solvency (dev mode or Signet Esplora)
+# 2. Audit mint solvency from the CLI (dev mode or Bitcoin Signet via Esplora)
 cargo run --release -p zashu-auditor -- --allow-unverified-utxos verify http://127.0.0.1:8080
-# With real Signet UTXO verification:
+# Signet Esplora verification:
 # cargo run --release -p zashu-auditor -- --esplora https://mempool.space/signet/api verify http://127.0.0.1:8080
 
-# 3. Use the Mode B CLI wallet
+# 3. Use the Zashu CLI wallet
 cargo run --release -p zashu-wallet -- init
 cargo run --release -p zashu-wallet -- mint 137
 cargo run --release -p zashu-wallet -- balance
 cargo run --release -p zashu-wallet -- send-token 37
 ```
 
-## Documentation
+Or run the automated end-to-end HTTP demo:
+```bash
+./scripts/demo.sh
+```
 
-* [IMPLEMENTATION_PLAN.md](./IMPLEMENTATION_PLAN.md) — Numbered task-by-task implementation plan for both Mode A and Mode B.
-* [BENCHMARKS.md](./BENCHMARKS.md) — Measured folding, verification, and accumulator pruning benchmarks.
-* [NUTZ Specifications](./NUTZ/README.md):
-  * [NUTZ-1](./NUTZ/NUTZ-1.md) — Verifiable ZK Mint Solvency (Mode A)
-  * [NUTZ-2](./NUTZ/NUTZ-2.md) — Shielded Ecash Notes & Mint API (Mode B Core)
-  * [NUTZ-3](./NUTZ/NUTZ-3.md) — Oblivious Witness Sync & Stealth Async Receives
-  * [NUTZ-4](./NUTZ/NUTZ-4.md) — Private Programmable Predicates & Cross-Mint Atomic Swaps
+---
+
+## Architecture & Workspace
+
+```text
+crates/
+├── zashu-core/         # Pasta/Poseidon, Pedersen commitments, Note/Nullifier, Taproot reserves, zashuA & zsp1 codecs
+├── zashu-acc/          # Tachyon-style NoteAccumulator & prunable NullifierAccumulator
+├── zashu-circuits/     # Halo 2 (Pasta/IPA) non-uniform PCD, unified k=13 Merkle+Range circuits, NUTZ-4 predicates
+├── zashu-mint/         # Unified Cashu + Zashu mint server, REST API, Landing Page & Glass-Box Playground
+├── zashu-cdk-sidecar/  # Drop-in NUTZ-1 solvency sidecar for Cashu Development Kit (CDK)
+├── zashu-auditor/      # CLI & library verifier (native + Esplora on-chain UTXO verification)
+└── zashu-wallet/       # CLI wallet for shielded notes, stealth sends, and private HTLCs
+```
+
+* **Specs:** [`NUTZ/README.md`](./NUTZ/README.md) (`NUTZ-1` through `NUTZ-4`)
+* **Benchmarks:** [`BENCHMARKS.md`](./BENCHMARKS.md) (1 ms verification, ~16 KB folded solvency proof, ~49.6% accumulator pruning over 10k spends)
+* **Design Roadmap:** [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md)
