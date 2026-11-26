@@ -212,6 +212,31 @@
     .arch-card h3 { margin: 0 0 6px; font-size: 1rem; }
     .arch-card p { margin: 0; font-size: 0.85rem; color: var(--muted); }
 
+    /* ZK Visual Diagrams */
+    .zk-diagrams {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .diagram-card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+    }
+    .diagram-card.zk { border-color: rgba(139, 92, 246, 0.55); }
+    .diagram-title {
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: #c4b5fd;
+      margin: 0 0 10px;
+      font-family: ui-monospace, monospace;
+    }
+    .diagram-card svg { width: 100%; height: auto; display: block; }
+
     /* Zashi Variants */
     .skins {
       display: grid;
@@ -402,6 +427,80 @@
       <div class="section-head">
         <h2>How ZK Works in Zashu — and Why It Runs Smoothly on Mobile</h2>
         <p>Zero-knowledge doesn't have to mean slow phones, drained batteries, or 100 MB proving keys. Zashu is engineered from day one for mobile Cashu wallets.</p>
+      </div>
+
+      <!-- Visual Diagrams -->
+      <div class="zk-diagrams">
+        <!-- Diagram 1: What You Know vs What the Mint Sees -->
+        <div class="diagram-card zk">
+          <div class="diagram-title">Visual 1 · Zero-Knowledge Proof Pipeline</div>
+          <svg viewBox="0 0 540 210" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Left Box: Private on Your Phone -->
+            <rect x="6" y="16" width="154" height="176" rx="12" fill="#0e131f" stroke="#f7931a" stroke-width="1.5"/>
+            <text x="18" y="38" fill="#f7931a" font-size="11" font-weight="700" font-family="ui-monospace, monospace">YOUR PHONE (PRIVATE)</text>
+            <rect x="18" y="50" width="130" height="32" rx="6" fill="#182134" stroke="#252f45"/>
+            <text x="26" y="70" fill="#eef2f7" font-size="11" font-family="ui-monospace, monospace">Amount: 137 sats</text>
+            <rect x="18" y="90" width="130" height="32" rx="6" fill="#182134" stroke="#252f45"/>
+            <text x="26" y="110" fill="#eef2f7" font-size="11" font-family="ui-monospace, monospace">Secret Key / HTLC</text>
+            <rect x="18" y="130" width="130" height="32" rx="6" fill="#182134" stroke="#252f45"/>
+            <text x="26" y="150" fill="#eef2f7" font-size="11" font-family="ui-monospace, monospace">Merkle Leaf #42</text>
+            <text x="26" y="180" fill="#8b9bb4" font-size="9.5" font-family="sans-serif">Never leaves device</text>
+
+            <!-- Arrow 1 -->
+            <path d="M164 104H194" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round"/>
+            <path d="M189 99L195 104L189 109" stroke="#8b5cf6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+            <!-- Center Box: Halo 2 Prover -->
+            <rect x="198" y="36" width="144" height="136" rx="12" fill="rgba(139,92,246,0.16)" stroke="#8b5cf6" stroke-width="2"/>
+            <text x="218" y="60" fill="#c4b5fd" font-size="11" font-weight="700" font-family="ui-monospace, monospace">HALO 2 PROVER</text>
+            <text x="212" y="84" fill="#eef2f7" font-size="10.5" font-family="sans-serif">✓ In Merkle Tree</text>
+            <text x="212" y="104" fill="#eef2f7" font-size="10.5" font-family="sans-serif">✓ Inputs = Outputs</text>
+            <text x="212" y="124" fill="#eef2f7" font-size="10.5" font-family="sans-serif">✓ 64-bit No Overflow</text>
+            <text x="212" y="144" fill="#eef2f7" font-size="10.5" font-family="sans-serif">✓ Valid Policy / Key</text>
+            <text x="223" y="162" fill="#8b9bb4" font-size="9" font-family="ui-monospace, monospace">k=13 · No Setup</text>
+
+            <!-- Arrow 2 -->
+            <path d="M346 104H376" stroke="#2ea043" stroke-width="2" stroke-linecap="round"/>
+            <path d="M371 99L377 104L371 109" stroke="#2ea043" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+            <!-- Right Box: What Mint Sees -->
+            <rect x="380" y="16" width="154" height="176" rx="12" fill="#0e131f" stroke="#2ea043" stroke-width="1.5"/>
+            <text x="394" y="38" fill="#3fb950" font-size="11" font-weight="700" font-family="ui-monospace, monospace">MINT SEES ONLY</text>
+            <rect x="392" y="50" width="130" height="32" rx="6" fill="#182134" stroke="#252f45"/>
+            <text x="400" y="70" fill="#8b9bb4" font-size="10.5" font-family="ui-monospace, monospace">nf: 0x9f3a...</text>
+            <rect x="392" y="90" width="130" height="32" rx="6" fill="#182134" stroke="#252f45"/>
+            <text x="400" y="110" fill="#8b9bb4" font-size="10.5" font-family="ui-monospace, monospace">cm: 0x7c1b...</text>
+            <rect x="392" y="130" width="130" height="32" rx="6" fill="rgba(46,160,67,0.16)" stroke="#2ea043"/>
+            <text x="401" y="150" fill="#3fb950" font-size="10.5" font-weight="700" font-family="ui-monospace, monospace">VALID ZK PROOF</text>
+            <text x="394" y="180" fill="#3fb950" font-size="9.5" font-family="sans-serif">Amount &amp; User: HIDDEN</text>
+          </svg>
+        </div>
+
+        <!-- Diagram 2: Mobile Speed & Battery Architecture -->
+        <div class="diagram-card">
+          <div class="diagram-title">Visual 2 · Mobile Speed, Battery &amp; Sync Budget</div>
+          <svg viewBox="0 0 540 210" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <!-- Lane 1: Coffee / BDHKE -->
+            <rect x="6" y="14" width="528" height="54" rx="10" fill="#0e131f" stroke="#252f45"/>
+            <text x="20" y="35" fill="#f7931a" font-size="11" font-weight="700" font-family="ui-monospace, monospace">1. EVERYDAY COFFEE (STANDARD CASHU BDHKE)</text>
+            <rect x="20" y="45" width="75" height="12" rx="6" fill="#f7931a"/>
+            <text x="106" y="55" fill="#eef2f7" font-size="10.5" font-family="ui-monospace, monospace">&lt;50 ms · Zero ZK overhead on small taps</text>
+
+            <!-- Lane 2: Shielded / Ragu -->
+            <rect x="6" y="78" width="528" height="54" rx="10" fill="#0e131f" stroke="#8b5cf6" stroke-width="1.3"/>
+            <text x="20" y="99" fill="#c4b5fd" font-size="11" font-weight="700" font-family="ui-monospace, monospace">2. SAVINGS, STEALTH &amp; HTLC (RAGU MODULAR ZK)</text>
+            <rect x="20" y="109" width="165" height="12" rx="6" fill="#8b5cf6"/>
+            <text x="196" y="119" fill="#eef2f7" font-size="10.5" font-family="ui-monospace, monospace">Tiny subcircuits · 0 MB setup · ~1 ms verify</text>
+
+            <!-- Lane 3: Oblivious Sync vs Full Scan -->
+            <rect x="6" y="142" width="528" height="56" rx="10" fill="#0e131f" stroke="#2ea043" stroke-width="1.3"/>
+            <text x="20" y="162" fill="#3fb950" font-size="11" font-weight="700" font-family="ui-monospace, monospace">3. MOBILE SYNC: TACHYON OBLIVIOUS DELTAS VS. FULL SCAN</text>
+            <rect x="20" y="172" width="48" height="12" rx="6" fill="#2ea043"/>
+            <text x="76" y="182" fill="#3fb950" font-size="10" font-weight="700" font-family="ui-monospace, monospace">Zashu Sync (Your Epochs Only)</text>
+            <rect x="275" y="172" width="145" height="12" rx="6" fill="rgba(248,81,73,0.45)" stroke="#f85149"/>
+            <text x="428" y="182" fill="#ff7b72" font-size="10" font-family="ui-monospace, monospace">Full-Chain Scan</text>
+          </svg>
+        </div>
       </div>
 
       <div class="compare">
