@@ -17,8 +17,8 @@ use serde::{Deserialize, Serialize};
 use zashu_acc::NoteAccumulator;
 use zashu_auditor::verify_solvency_bundle;
 use zashu_circuits::mode_b::{
-    balance_blinding, prove_zk_mint, prove_zk_shield, prove_zk_swap, InputNoteWitness,
-    OutputNoteWitness,
+    balance_blinding, prove_zk_melt, prove_zk_mint, prove_zk_shield, prove_zk_swap,
+    InputNoteWitness, OutputNoteWitness,
 };
 use zashu_circuits::predicates::PredicateWitness;
 use zashu_core::field::{bytes_to_fq, fq_to_bytes, hash_bytes_to_fq, Fq, PallasPoint};
@@ -29,7 +29,7 @@ use zashu_core::stealth::{
 };
 use zashu_core::types::{MintState, Note};
 
-use crate::{MintReserveKey, ZashuMint, ZkMintRequest, ZkShieldRequest, ZkSwapRequest};
+use crate::{MintReserveKey, ZashuMint, ZkMeltRequest, ZkMintRequest, ZkShieldRequest, ZkSwapRequest};
 
 const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
 const MAX_SESSIONS: usize = 256;
@@ -501,6 +501,73 @@ impl PlaygroundSession {
         Ok(count)
     }
 
+    pub fn bob_melt(&mut self) -> Result<u64, String> {
+        let idx = self
+            .bob_notes
+            .iter()
+            .position(|n| !n.spent)
+            .ok_or_else(|| "Bob has no unspent notes to melt. Sync Bob's wallet first!".to_string())?;
+
+        let t0 = Instant::now();
+        // Ensure Bob's accumulator is up to date before proving
+        let sync = self.mint.sync_from_epoch(self.bob_synced_epoch);
+        for (_, cm) in &sync.new_commitments {
+            self.bob_acc.insert(cm.0).map_err(|e| e.to_string())?;
+        }
+        self.bob_synced_epoch = sync.to_epoch;
+
+        let inp = self.bob_notes[idx].clone();
+        let witness = self.bob_acc.witness(inp.leaf_index).map_err(|e| e.to_string())?;
+        let anchor = self.bob_acc.root();
+
+        let (nfs, _, proof) = prove_zk_melt(
+            &anchor,
+            &[InputNoteWitness {
+                note: &inp.note,
+                blind: inp.blind,
+                witness: &witness,
+                predicate: &PredicateWitness::StandardSpend { sk: inp.sk },
+            }],
+            inp.note.value,
+            None,
+        )
+        .map_err(|e| e.to_string())?;
+
+        let proof_b64 = proof.to_base64().map_err(|e| e.to_string())?;
+        self.mint
+            .zk_melt(ZkMeltRequest {
+                quote_id: format!("bob_ln_pay_{}", self.nonce_counter),
+                amount: inp.note.value,
+                anchor_root: anchor,
+                nullifiers: nfs.clone(),
+                change_cm: None,
+                change_cv: None,
+                proof: proof_b64.clone(),
+            })
+            .map_err(|e| e.to_string())?;
+
+        self.bob_notes[idx].spent = true;
+        self.last_action_ms = t0.elapsed().as_millis();
+        self.xray_logs.insert(
+            0,
+            XRayLogEntry {
+                endpoint: "POST /v1/zk/melt (Unified k=13 Proof)".into(),
+                summary: format!(
+                    "Bob melted {} sats to Lightning invoice in {}ms (liabilities decremented)",
+                    inp.note.value, self.last_action_ms
+                ),
+                opaque_payload: serde_json::json!({
+                    "anchor_root": format!("0x{}...", hex::encode(&anchor[..6])),
+                    "nullifiers": nfs.iter().map(|n| format!("0x{}...", hex::encode(&n.0[..6]))).collect::<Vec<_>>(),
+                    "public_ln_payout": inp.note.value,
+                    "unified_proof_bytes": proof_b64.len(),
+                }),
+                hidden_from_mint: "Originating sender (Alice), input note index & prior history!".into(),
+            },
+        );
+        Ok(inp.note.value)
+    }
+
     pub fn audit(&self, tamper_fractional: bool) -> DemoAuditView {
         let mut bundle = match self.mint.solvency_bundle() {
             Ok(b) => b,
@@ -636,6 +703,7 @@ pub fn playground_router(store: SharedPlayground) -> Router {
         .route("/v1/demo/stealth_send", post(demo_stealth_send))
         .route("/v1/demo/double_spend", post(demo_double_spend))
         .route("/v1/demo/bob_sync", post(demo_bob_sync))
+        .route("/v1/demo/bob_melt", post(demo_bob_melt))
         .route("/v1/demo/audit", post(demo_audit))
         .with_state(store)
 }
@@ -799,6 +867,22 @@ async fn demo_bob_sync(
     let mut g = s.write().unwrap();
     let res = g.with_session_mut(&sid, |sess| {
         sess.bob_sync()?;
+        Ok::<_, String>(sess.state_view(&sid))
+    });
+    match res {
+        Ok(view) => (StatusCode::OK, Json(serde_json::to_value(view).unwrap())),
+        Err(e) => json_err(e),
+    }
+}
+
+async fn demo_bob_melt(
+    State(s): State<SharedPlayground>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let sid = extract_session_id(&headers);
+    let mut g = s.write().unwrap();
+    let res = g.with_session_mut(&sid, |sess| {
+        sess.bob_melt()?;
         Ok::<_, String>(sess.state_view(&sid))
     });
     match res {

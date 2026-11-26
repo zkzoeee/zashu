@@ -138,6 +138,27 @@ async fn playground_html_and_multi_session_flow_e2e() {
             .unwrap();
     assert_eq!(bob_st["bob_balance"], 37);
 
+    // 5b. Bob melts his 37-sat stealth note to pay a Lightning invoice
+    let melt_resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/v1/demo/bob_melt")
+                .header("x-zashu-session", "tab-a")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(melt_resp.status(), StatusCode::OK);
+    let melt_st: serde_json::Value =
+        serde_json::from_slice(&axum::body::to_bytes(melt_resp.into_body(), usize::MAX).await.unwrap())
+            .unwrap();
+    assert_eq!(melt_st["bob_balance"], 0);
+    assert_eq!(melt_st["mint_state"]["total_liabilities"], 100);
+    assert_eq!(melt_st["audit"]["solvent"], true);
+
     // 6. Evil Mint fractional reserve fails
     let evil_resp = app
         .oneshot(

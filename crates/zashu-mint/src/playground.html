@@ -161,7 +161,23 @@
       display: flex;
       flex-direction: column;
       gap: 12px;
+      transition: border-color 0.25s, box-shadow 0.25s;
     }
+    .mint-box.flash {
+      border-color: var(--violet);
+      box-shadow: 0 0 24px rgba(139, 92, 246, 0.45);
+    }
+    .pill {
+      display: inline-block;
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-family: ui-monospace, monospace;
+      background: #1b2436;
+      border: 1px solid var(--border);
+      margin-right: 3px;
+    }
+    .pill.zk { background: rgba(139, 92, 246, 0.2); border-color: var(--violet); color: #c4b5fd; }
     .mint-stats {
       display: grid;
       grid-template-columns: repeat(3, 1fr);
@@ -309,7 +325,9 @@
           <div class="balance-lbl">Shielded Balance</div>
           <div class="balance" id="alice-bal">0 sats</div>
         </div>
-        <div class="mono" style="text-align:right;">1 note = exact amount<br/>(no 128+8+1 split)</div>
+        <div class="mono" style="text-align:right;">
+          <span class="pill">128</span><span class="pill">8</span><span class="pill">1</span> → <span class="pill zk">137 (1 Note)</span>
+        </div>
       </div>
       <div class="row">
         <input id="mint-amt" type="number" value="137" min="1" />
@@ -340,6 +358,7 @@
       </div>
       <div class="row">
         <button id="btn-bob" class="primary" onclick="act('/v1/demo/bob_sync', {}, 'Running Oblivious Sync & decrypting stealth memos...')">Come Online &amp; Oblivious Sync</button>
+        <button id="btn-bob-melt" class="amber" onclick="act('/v1/demo/bob_melt', {}, 'Generating k=13 unified ZkMelt proof to pay Lightning...')">Melt Note (Pay LN)</button>
       </div>
       <div class="mono">Bob's Decrypted Notes:</div>
       <div class="list" id="bob-notes"></div>
@@ -404,12 +423,13 @@
     }
 
     function updateStepper(st) {
-      const minted = st.alice_notes.length > 0;
+      const minted = st.xray_logs.some(l => l.endpoint.includes('/v1/zk/mint'));
+      const shielded = st.xray_logs.some(l => l.endpoint.includes('/v1/zk/shield'));
       const sent = st.alice_notes.some(n => n.spent);
       const ds = st.xray_logs.some(l => l.endpoint.includes('REPLAY'));
       const synced = st.bob_notes.length > 0;
 
-      const states = [minted, minted, sent, ds, synced];
+      const states = [minted, shielded, sent, ds, synced];
       let nextIdx = states.findIndex(done => !done);
       if (nextIdx === -1) nextIdx = 4;
 
@@ -420,6 +440,13 @@
       ['btn-mint', 'btn-shield', 'btn-send', 'btn-ds', 'btn-bob'].forEach((id, i) => {
         document.getElementById(id).classList.toggle('next-hint', i === nextIdx && !states[i]);
       });
+      document.getElementById('btn-bob-melt').disabled = st.bob_balance === 0;
+    }
+
+    function flashMint() {
+      const m = document.querySelector('.mint-box');
+      m.classList.add('flash');
+      setTimeout(() => m.classList.remove('flash'), 650);
     }
 
     function render(st) {
@@ -482,6 +509,7 @@
         const data = await r.json();
         if (!r.ok) throw new Error(data.error || 'request failed');
         render(data);
+        flashMint();
         toast(`Done in ${data.last_action_ms}ms!`);
       } catch (e) {
         toast('Error: ' + e.message);
