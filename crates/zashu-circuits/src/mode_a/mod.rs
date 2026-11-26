@@ -48,6 +48,63 @@ impl FoldBackend {
     }
 }
 
+/// Folds Mode A steps as they are produced.
+///
+/// With [`FoldBackend::Ragu`] every pushed step is fused onto a running proof
+/// on a worker thread, so [`snapshot`](Self::snapshot) only has to wait for the
+/// worker to catch up and compress. With [`FoldBackend::Halo2`] it does
+/// nothing and `snapshot` returns `None`; callers then fold the batch with
+/// [`fold_mode_a_batch`].
+pub struct IncrementalFold {
+    backend: FoldBackend,
+    #[cfg(feature = "ragu")]
+    folder: Option<ragu_backend::BackgroundFolder>,
+}
+
+impl IncrementalFold {
+    pub fn new(backend: FoldBackend) -> Result<Self> {
+        match backend {
+            FoldBackend::Halo2 => Ok(Self {
+                backend,
+                #[cfg(feature = "ragu")]
+                folder: None,
+            }),
+            #[cfg(feature = "ragu")]
+            FoldBackend::Ragu => Ok(Self { backend, folder: Some(ragu_backend::BackgroundFolder::spawn()) }),
+            #[cfg(not(feature = "ragu"))]
+            FoldBackend::Ragu => Err(ragu_unavailable()),
+        }
+    }
+
+    pub fn from_env() -> Result<Self> {
+        Self::new(FoldBackend::from_env()?)
+    }
+
+    pub fn backend(&self) -> FoldBackend {
+        self.backend
+    }
+
+    /// Queues a step. Steps must be pushed in the order they happened.
+    pub fn push(&self, step: &FoldedProof) {
+        #[cfg(feature = "ragu")]
+        if let Some(folder) = &self.folder {
+            folder.push(step.clone());
+        }
+        #[cfg(not(feature = "ragu"))]
+        let _ = step;
+    }
+
+    /// The proof of everything pushed so far, or `None` when this backend does
+    /// not fold incrementally or nothing was pushed.
+    pub fn snapshot(&self) -> Result<Option<FoldedProof>> {
+        #[cfg(feature = "ragu")]
+        if let Some(folder) = &self.folder {
+            return folder.snapshot();
+        }
+        Ok(None)
+    }
+}
+
 #[cfg(not(feature = "ragu"))]
 fn ragu_unavailable() -> CircuitError {
     CircuitError::VerificationFailed(

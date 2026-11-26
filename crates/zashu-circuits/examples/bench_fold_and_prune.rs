@@ -8,6 +8,10 @@ use zashu_core::types::MintState;
 
 fn main() {
     println!("=== Zashu Task A.5 Benchmarks ===");
+    println!(
+        "fold backend: {:?}",
+        zashu_circuits::mode_a::FoldBackend::from_env().unwrap()
+    );
 
     for &batch_size in &[1usize, 16, 64] {
         let s0 = MintState::genesis([0u8; 32], [0u8; 32]);

@@ -104,3 +104,31 @@ fn ragu_fold_rejects_broken_chains() {
     // Empty batch.
     assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[]).is_err());
 }
+
+#[test]
+fn incremental_fold_matches_batch_and_poisons_on_a_gap() {
+    use zashu_circuits::mode_a::IncrementalFold;
+
+    let Chain { states: [s0, s1, _, s3], steps: [p1, p2, p3] } = chain();
+    let fold = IncrementalFold::new(FoldBackend::Ragu).unwrap();
+    assert!(fold.snapshot().unwrap().is_none());
+
+    fold.push(&p1);
+    let after_one = fold.snapshot().unwrap().unwrap();
+    verify_fold_batch(&after_one, &s0.state_hash(), &s1).unwrap();
+
+    fold.push(&p2);
+    fold.push(&p3);
+    let all = fold.snapshot().unwrap().unwrap();
+    assert_eq!(all.folded_children, 3);
+    verify_fold_batch(&all, &s0.state_hash(), &s3).unwrap();
+
+    // Pushing a step that does not continue the chain poisons the folder.
+    fold.push(&p1);
+    assert!(fold.snapshot().is_err());
+
+    // The Halo 2 backend does not fold incrementally.
+    let halo2 = IncrementalFold::new(FoldBackend::Halo2).unwrap();
+    halo2.push(&p2);
+    assert!(halo2.snapshot().unwrap().is_none());
+}

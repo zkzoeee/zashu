@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zashu_acc::{InclusionWitness, NoteAccumulator, NullifierAccumulator};
 use zashu_circuits::mode_a::{
-    fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step,
+    fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step, verify_fold_batch,
+    IncrementalFold,
 };
 use zashu_circuits::mode_b::{
     verify_zk_melt, verify_zk_mint, verify_zk_shield, verify_zk_swap, verify_zk_unshield,
@@ -203,6 +204,8 @@ pub struct ZashuMint {
     rolling_window: usize,
     reserves: Vec<MintReserveKey>,
     step_proofs: Vec<FoldedProof>,
+    /// Folds steps in the background when the Ragu backend is selected.
+    incremental_fold: IncrementalFold,
     epoch_commitments: Vec<(u64, u64, NoteCommitment)>,
     legacy_spent_secrets: HashSet<String>,
     legacy_issued_secrets: HashMap<String, u64>,
@@ -230,6 +233,8 @@ impl ZashuMint {
             rolling_window,
             reserves,
             step_proofs: Vec::new(),
+            incremental_fold: IncrementalFold::from_env()
+                .expect("invalid ZASHU_FOLD_BACKEND or backend not compiled in"),
             epoch_commitments: Vec::new(),
             legacy_spent_secrets: HashSet::new(),
             legacy_issued_secrets: HashMap::new(),
@@ -257,7 +262,7 @@ impl ZashuMint {
             self.state.total_liabilities += amt;
             let qh = blake2b_hash(secret.as_bytes());
             self.state.event_log_hash = hash_event_mint(&prev.event_log_hash, &qh, amt);
-            self.step_proofs.push(prove_mint_step(&prev, &self.state, amt)?);
+            self.record_step(prove_mint_step(&prev, &self.state, amt)?);
             out.push(LegacyCashuProof {
                 secret,
                 amount: amt,
@@ -283,8 +288,7 @@ impl ZashuMint {
         self.state.note_acc_root = self.note_acc.root();
         let qh = blake2b_hash(req.quote_id.as_bytes());
         self.state.event_log_hash = hash_event_mint(&prev.event_log_hash, &qh, req.amount);
-        self.step_proofs
-            .push(prove_mint_step(&prev, &self.state, req.amount)?);
+        self.record_step(prove_mint_step(&prev, &self.state, req.amount)?);
         self.epoch_commitments
             .push((self.state.epoch, leaf_index, req.cm));
 
@@ -339,8 +343,7 @@ impl ZashuMint {
 
         self.state.nullifier_acc_root = self.nf_acc.root();
         self.state.note_acc_root = self.note_acc.root();
-        self.step_proofs
-            .push(prove_swap_step(&prev, &self.state, 0, 0, &transitions)?);
+        self.record_step(prove_swap_step(&prev, &self.state, 0, 0, &transitions)?);
 
         let sig = self.sign_state(&self.state);
         Ok(ZkSwapResponse {
@@ -393,8 +396,7 @@ impl ZashuMint {
             .ok_or_else(|| MintError::InvalidRequest("melt exceeds liabilities".into()))?;
         let ph = blake2b_hash(req.quote_id.as_bytes());
         self.state.event_log_hash = hash_event_melt(&prev.event_log_hash, &ph, req.amount);
-        self.step_proofs
-            .push(prove_melt_step(&prev, &self.state, req.amount)?);
+        self.record_step(prove_melt_step(&prev, &self.state, req.amount)?);
 
         let sig = self.sign_state(&self.state);
         Ok(ZkMeltResponse {
@@ -442,8 +444,7 @@ impl ZashuMint {
         self.state.nullifier_acc_root = self.nf_acc.root();
         self.state.note_acc_root = self.note_acc.root();
         // Liabilities unchanged!
-        self.step_proofs
-            .push(prove_swap_step(&prev, &self.state, sum, sum, &transitions)?);
+        self.record_step(prove_swap_step(&prev, &self.state, sum, sum, &transitions)?);
 
         let witness = self.note_acc.witness(leaf_index)?;
         let sig = self.sign_state(&self.state);
@@ -511,7 +512,7 @@ impl ZashuMint {
         self.state.nullifier_acc_root = self.nf_acc.root();
         self.state.note_acc_root = self.note_acc.root();
         // Liabilities unchanged!
-        self.step_proofs.push(prove_swap_step(
+        self.record_step(prove_swap_step(
             &prev,
             &self.state,
             req.unshield_amount,
@@ -545,13 +546,29 @@ impl ZashuMint {
         }
     }
 
+    /// Records a Mode A step proof and queues it for background folding.
+    fn record_step(&mut self, step: FoldedProof) {
+        self.incremental_fold.push(&step);
+        self.step_proofs.push(step);
+    }
+
     pub fn solvency_bundle(&self) -> Result<SolvencyBundle> {
-        let steps = if self.step_proofs.is_empty() {
-            vec![prove_swap_step(&self.genesis_state, &self.state, 0, 0, &[])?]
-        } else {
-            self.step_proofs.clone()
+        let folded = match self.incremental_fold.snapshot()? {
+            // Folded in the background as the steps happened. Check it spans
+            // genesis to the current state before signing it into a bundle.
+            Some(folded) => {
+                verify_fold_batch(&folded, &self.genesis_state.state_hash(), &self.state)?;
+                folded
+            }
+            None => {
+                let steps = if self.step_proofs.is_empty() {
+                    vec![prove_swap_step(&self.genesis_state, &self.state, 0, 0, &[])?]
+                } else {
+                    self.step_proofs.clone()
+                };
+                fold_mode_a_batch(&self.genesis_state, &self.state, &steps)?
+            }
         };
-        let folded = fold_mode_a_batch(&self.genesis_state, &self.state, &steps)?;
         let challenge = compute_reserves_challenge(&self.mint_id, &self.state);
         let utxos = self
             .reserves

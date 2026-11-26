@@ -20,7 +20,7 @@
 //! the same layout as the Halo 2 `FoldBatch` proof:
 //! `[start_liabilities, end_liabilities, start_state, end_state, step_count]`.
 
-use std::sync::OnceLock;
+use std::sync::{mpsc, OnceLock};
 
 use ragu::circuits::polynomials::R;
 use ragu::drivers::{Driver, DriverValue};
@@ -355,8 +355,8 @@ fn seed_leaf(app: &App, kind: StepKind, w: StepWitness) -> Result<TransitionPcd>
 /// Folds a contiguous sequence of Mode A step proofs into one compressed Ragu
 /// PCD proof.
 ///
-/// Leaves are fused left to right, so at most two uncompressed proofs (about
-/// 34 MB each at rank 14) are alive at a time.
+/// Leaves are proven in parallel chunks (see [`parallel_chunk`]) and the chunks
+/// fused left to right.
 pub fn fold(start_state: &MintState, end_state: &MintState, step_proofs: &[FoldedProof]) -> Result<FoldedProof> {
     if step_proofs.is_empty() {
         return Err(CircuitError::InvalidWitness("cannot fold empty proof batch".into()));
@@ -381,17 +381,55 @@ pub fn fold(start_state: &MintState, end_state: &MintState, step_proofs: &[Folde
     }
 
     let app = app()?;
-    let rng = &mut UnwrapErr(SysRng);
     let mut acc: Option<TransitionPcd> = None;
-    for (kind, w) in leaves {
-        let leaf = seed_leaf(app, kind, w)?;
+    for chunk in leaves.chunks(parallel_chunk()) {
+        let part = fold_chunk(app, chunk)?;
         acc = Some(match acc {
-            None => leaf,
-            Some(prev) => app.fuse(rng, FoldStep, (), prev, leaf).map_err(|e| ragu_err("fuse", e))?.0,
+            None => part,
+            Some(prev) => fuse(app, prev, part)?,
         });
     }
-    let root = acc.expect("non-empty batch");
-    let compressed = app.compress(&root, rng).map_err(|e| ragu_err("compress", e))?;
+    finish(app, &acc.expect("non-empty batch"), step_proofs.len())
+}
+
+/// How many leaves are proven and tree-fused concurrently in a batch fold,
+/// set with `ZASHU_RAGU_PARALLEL`. The default is sequential: Ragu already
+/// uses every core inside one proof, each in-flight uncompressed proof is
+/// about 34 MB at rank 14, and on a 10-core machine 4-way chunks measured only
+/// about 1.3x faster while 8-way was several times slower.
+fn parallel_chunk() -> usize {
+    std::env::var("ZASHU_RAGU_PARALLEL")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .filter(|n| *n >= 1)
+        .unwrap_or(DEFAULT_PARALLEL_CHUNK)
+}
+
+const DEFAULT_PARALLEL_CHUNK: usize = 1;
+
+fn fuse(app: &App, left: TransitionPcd, right: TransitionPcd) -> Result<TransitionPcd> {
+    app.fuse(&mut UnwrapErr(SysRng), FoldStep, (), left, right)
+        .map(|p| p.0)
+        .map_err(|e| ragu_err("fuse", e))
+}
+
+/// Proves a run of adjacent leaves and fuses them into one transition, as a
+/// balanced tree whose two halves are proven concurrently.
+fn fold_chunk(app: &App, leaves: &[(StepKind, StepWitness)]) -> Result<TransitionPcd> {
+    match leaves {
+        [] => unreachable!("chunks are never empty"),
+        [(kind, w)] => seed_leaf(app, *kind, *w),
+        _ => {
+            let (l, r) = leaves.split_at(leaves.len() / 2);
+            let (l, r) = rayon::join(|| fold_chunk(app, l), || fold_chunk(app, r));
+            fuse(app, l?, r?)
+        }
+    }
+}
+
+/// Compresses a folded transition into the wire proof.
+fn finish(app: &App, root: &TransitionPcd, steps: usize) -> Result<FoldedProof> {
+    let compressed = app.compress(root, &mut UnwrapErr(SysRng)).map_err(|e| ragu_err("compress", e))?;
     let (proof, data) = compressed.into_parts();
     let bytes = proof.to_bytes().map_err(|e| ragu_err("encode", format!("{e:?}")))?;
 
@@ -404,9 +442,95 @@ pub fn fold(start_state: &MintState, end_state: &MintState, step_proofs: &[Folde
         k: RAGU_RANK,
         public_inputs,
         ipa_proof: bytes,
-        folded_children: step_proofs.len(),
+        folded_children: steps,
         transition: None,
     })
+}
+
+enum FolderMsg {
+    Step(Box<FoldedProof>),
+    Snapshot(mpsc::Sender<Result<Option<FoldedProof>>>),
+}
+
+/// Folds Mode A steps on a worker thread as they happen, so producing the
+/// `NUTZ-1` proof only costs one compression once the worker has caught up.
+///
+/// Steps must be pushed in order. The worker keeps a single running proof;
+/// a step that does not extend it poisons the folder and every later
+/// [`snapshot`](Self::snapshot) reports that error.
+pub struct BackgroundFolder {
+    tx: mpsc::Sender<FolderMsg>,
+}
+
+impl BackgroundFolder {
+    pub fn spawn() -> Self {
+        let (tx, rx) = mpsc::channel::<FolderMsg>();
+        std::thread::Builder::new()
+            .name("zashu-ragu-fold".into())
+            .spawn(move || {
+                let mut acc: Option<(TransitionPcd, StateFields, usize)> = None;
+                let mut poisoned: Option<String> = None;
+                for msg in rx {
+                    match msg {
+                        FolderMsg::Step(step) => {
+                            if poisoned.is_none() {
+                                match extend(acc.take(), &step) {
+                                    Ok(next) => acc = Some(next),
+                                    Err(e) => poisoned = Some(e.to_string()),
+                                }
+                            }
+                        }
+                        FolderMsg::Snapshot(reply) => {
+                            let result = match (&poisoned, &acc) {
+                                (Some(e), _) => Err(CircuitError::Plonk(format!("ragu background fold: {e}"))),
+                                (None, None) => Ok(None),
+                                (None, Some((root, _, steps))) => {
+                                    app().and_then(|app| finish(app, root, *steps)).map(Some)
+                                }
+                            };
+                            let _ = reply.send(result);
+                        }
+                    }
+                }
+            })
+            .expect("spawn ragu fold worker");
+        Self { tx }
+    }
+
+    /// Queues a step proof (with its state transition). Never blocks on proving.
+    pub fn push(&self, step: FoldedProof) {
+        let _ = self.tx.send(FolderMsg::Step(Box::new(step)));
+    }
+
+    /// Waits for every queued step to be folded, then compresses the running
+    /// proof. Returns `None` if no step was pushed yet.
+    pub fn snapshot(&self) -> Result<Option<FoldedProof>> {
+        let (reply, rx) = mpsc::channel();
+        let gone = || CircuitError::Plonk("ragu background fold worker stopped".into());
+        self.tx.send(FolderMsg::Snapshot(reply)).map_err(|_| gone())?;
+        rx.recv().map_err(|_| gone())?
+    }
+}
+
+/// Fuses one more step onto the running proof.
+fn extend(
+    acc: Option<(TransitionPcd, StateFields, usize)>,
+    step: &FoldedProof,
+) -> Result<(TransitionPcd, StateFields, usize)> {
+    let (kind, w) = leaf_from_step(step)?;
+    check_leaf(kind, &w)?;
+    let app = app()?;
+    match acc {
+        None => Ok((seed_leaf(app, kind, w)?, w.next, 1)),
+        Some((root, end, steps)) => {
+            if end != w.prev {
+                return Err(CircuitError::InvalidWitness(format!(
+                    "step {steps} does not chain onto the folded state"
+                )));
+            }
+            Ok((fuse(app, root, seed_leaf(app, kind, w)?)?, w.next, steps + 1))
+        }
+    }
 }
 
 /// Verifies a compressed Ragu fold proof against its own public inputs.
