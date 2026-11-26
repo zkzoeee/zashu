@@ -623,7 +623,12 @@ pub type SharedPlayground = Arc<RwLock<PlaygroundStore>>;
 
 pub fn playground_router(store: SharedPlayground) -> Router {
     Router::new()
-        .route("/", get(serve_html))
+        .route("/", get(serve_landing))
+        .route("/playground", get(serve_html))
+        .route("/assets/zashi-mascot.jpg", get(serve_mascot))
+        .route("/assets/zashi-var-streetwear.jpg", get(serve_var_streetwear))
+        .route("/assets/zashi-var-cyber.jpg", get(serve_var_cyber))
+        .route("/assets/zashi-var-monk.jpg", get(serve_var_monk))
         .route("/v1/demo/state", get(demo_state))
         .route("/v1/demo/reset", post(demo_reset))
         .route("/v1/demo/mint", post(demo_mint))
@@ -644,8 +649,40 @@ fn extract_session_id(headers: &HeaderMap) -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+async fn serve_landing() -> Html<&'static str> {
+    Html(include_str!("landing.html"))
+}
+
 async fn serve_html() -> Html<&'static str> {
     Html(include_str!("playground.html"))
+}
+
+async fn serve_mascot() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+        include_bytes!("../../../assets/zashi-mascot.jpg").as_slice(),
+    )
+}
+
+async fn serve_var_streetwear() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+        include_bytes!("../../../assets/zashi-var-streetwear.jpg").as_slice(),
+    )
+}
+
+async fn serve_var_cyber() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+        include_bytes!("../../../assets/zashi-var-cyber.jpg").as_slice(),
+    )
+}
+
+async fn serve_var_monk() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+        include_bytes!("../../../assets/zashi-var-monk.jpg").as_slice(),
+    )
 }
 
 async fn demo_state(

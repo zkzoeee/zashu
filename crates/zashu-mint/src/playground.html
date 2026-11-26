@@ -3,12 +3,13 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Zashu — ZK-Cashu Glass-Box Playground</title>
+  <title>Zashu — Interactive Wallet, Mint & Auditor Playground</title>
   <style>
     :root {
       --bg: #0a0d14;
       --panel: #121826;
-      --panel-alt: #0f1420;
+      --wallet-bg: #141c2e;
+      --mint-bg: #101521;
       --border: #252f45;
       --text: #eef2f7;
       --muted: #8b9bb4;
@@ -22,10 +23,10 @@
     body {
       margin: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: radial-gradient(circle at top right, rgba(139, 92, 246, 0.08), transparent 45%), var(--bg);
+      background: radial-gradient(circle at top right, rgba(139, 92, 246, 0.09), transparent 45%), var(--bg);
       color: var(--text);
       padding: 20px;
-      max-width: 1440px;
+      max-width: 1320px;
       margin-inline: auto;
     }
     header {
@@ -40,32 +41,30 @@
     }
     .brand { display: flex; align-items: center; gap: 14px; }
     .mascot-wrap {
-      width: 56px;
-      height: 56px;
+      width: 52px;
+      height: 52px;
       border-radius: 14px;
-      background: linear-gradient(135deg, rgba(139,92,246,0.2), rgba(247,147,26,0.12));
       border: 1px solid var(--violet);
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      overflow: hidden;
       box-shadow: 0 0 18px var(--violet-glow);
       transition: transform 0.2s, box-shadow 0.2s;
     }
+    .mascot-wrap img { width: 100%; height: 100%; object-fit: cover; display: block; }
     .mascot-wrap.proving { animation: pulse 1s infinite alternate; }
     @keyframes pulse {
       from { box-shadow: 0 0 10px var(--violet-glow); transform: scale(1); }
-      to { box-shadow: 0 0 26px rgba(139, 92, 246, 0.7); transform: scale(1.04); }
+      to { box-shadow: 0 0 26px rgba(139, 92, 246, 0.75); transform: scale(1.04); }
     }
-    h1 { margin: 0; font-size: 1.45rem; letter-spacing: -0.02em; }
+    h1 { margin: 0; font-size: 1.4rem; letter-spacing: -0.02em; }
     h1 span { color: var(--violet); }
     .subtitle { color: var(--muted); font-size: 0.86rem; margin-top: 3px; }
 
     /* Story Mode Stepper */
     .stepper {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(175px, 1fr));
       gap: 8px;
-      margin-bottom: 16px;
+      margin-bottom: 18px;
     }
     .step {
       background: var(--panel);
@@ -82,63 +81,123 @@
       color: var(--text);
       box-shadow: 0 0 12px var(--violet-glow);
     }
-    .step.done {
-      border-color: var(--green);
-      color: #7ee787;
-    }
+    .step.done { border-color: var(--green); color: #7ee787; }
     .step b { display: block; font-size: 0.82rem; margin-bottom: 2px; }
 
-    /* Diff Card */
-    .diff-bar {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-      gap: 12px;
-      margin-bottom: 16px;
+    /* Section Labels */
+    .section-label {
+      font-size: 0.74rem;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin: 14px 0 8px;
     }
-    .diff-card {
-      background: var(--panel-alt);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 10px 14px;
-      font-size: 0.8rem;
-    }
-    .diff-card.zashu { border-color: rgba(139, 92, 246, 0.5); }
-    .pill {
-      display: inline-block;
-      font-size: 0.7rem;
-      padding: 2px 7px;
-      border-radius: 4px;
-      font-family: ui-monospace, monospace;
-      background: #1b2436;
-      border: 1px solid var(--border);
-      margin-right: 4px;
-    }
-    .pill.zk { background: rgba(139, 92, 246, 0.2); border-color: var(--violet); color: #c4b5fd; }
 
-    .grid {
+    /* Row 1: Two Wallet Boxes */
+    .wallets-grid {
       display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
       gap: 16px;
     }
-    .panel {
-      background: var(--panel);
+    .wallet-box {
+      background: linear-gradient(180deg, rgba(139, 92, 246, 0.06), var(--wallet-bg));
+      border: 1px solid rgba(139, 92, 246, 0.35);
+      border-radius: 16px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+    }
+    .wallet-top {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 10px;
+    }
+    .wallet-title { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 1.05rem; }
+    .avatar {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      font-weight: 700;
+    }
+    .avatar.alice { background: rgba(247, 147, 26, 0.2); color: var(--amber); border: 1px solid var(--amber); }
+    .avatar.bob { background: rgba(139, 92, 246, 0.2); color: #c4b5fd; border: 1px solid var(--violet); }
+    .balance-card {
+      background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
+      border-radius: 12px;
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .balance-lbl { font-size: 0.74rem; color: var(--muted); text-transform: uppercase; letter-spacing: 0.05em; }
+    .balance { font-size: 1.7rem; font-weight: 800; color: var(--amber); }
+
+    /* Row 2: Mint Box + Auditor Box */
+    .infra-grid {
+      display: grid;
+      grid-template-columns: 1.35fr 0.9fr;
+      gap: 16px;
+    }
+    @media (max-width: 860px) {
+      .infra-grid { grid-template-columns: 1fr; }
+    }
+    .mint-box {
+      background: var(--mint-bg);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 18px;
       display: flex;
       flex-direction: column;
       gap: 12px;
     }
-    .panel h2 {
-      margin: 0;
-      font-size: 1.02rem;
+    .mint-stats {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .stat-pill {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 10px;
+    }
+    .stat-pill span { display: block; font-size: 0.7rem; color: var(--muted); }
+    .stat-pill b { font-size: 0.95rem; font-family: ui-monospace, monospace; }
+
+    .auditor-box {
+      background: var(--panel);
+      border: 1px solid var(--green);
+      border-radius: 14px;
+      padding: 18px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .auditor-box.failed { border-color: var(--red); }
+
+    .box-head {
       display: flex;
       justify-content: space-between;
       align-items: center;
+      gap: 8px;
     }
+    .box-head h2 { margin: 0; font-size: 1.02rem; }
+
     .badge {
       font-size: 0.73rem;
-      padding: 3px 8px;
+      padding: 3px 9px;
       border-radius: 999px;
       font-weight: 600;
       background: #1c2434;
@@ -147,10 +206,10 @@
     .badge.ok { background: rgba(46, 160, 67, 0.18); color: #3fb950; border: 1px solid var(--green); }
     .badge.fail { background: rgba(248, 81, 73, 0.18); color: #ff7b72; border: 1px solid var(--red); }
     .badge.zk { background: rgba(139, 92, 246, 0.2); color: #c4b5fd; border: 1px solid var(--violet); }
-    .balance { font-size: 1.65rem; font-weight: 700; color: var(--amber); }
+
     .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
     input[type="number"] {
-      width: 96px;
+      width: 92px;
       padding: 7px 10px;
       border-radius: 6px;
       border: 1px solid var(--border);
@@ -159,13 +218,13 @@
     }
     button {
       padding: 8px 12px;
-      border-radius: 6px;
+      border-radius: 7px;
       border: 1px solid var(--border);
       background: #1a2336;
       color: var(--text);
       cursor: pointer;
       font-weight: 600;
-      font-size: 0.83rem;
+      font-size: 0.82rem;
       transition: all 0.15s;
     }
     button:hover { background: #24314a; }
@@ -173,19 +232,20 @@
     button.primary:hover { background: #7c3aed; }
     button.amber { background: var(--amber); color: #111; border-color: var(--amber); }
     button.danger { background: rgba(248, 81, 73, 0.15); border-color: var(--red); color: #ff7b72; }
-    button.next-hint { box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.65); }
+    button.next-hint { box-shadow: 0 0 0 2px rgba(139, 92, 246, 0.7); }
     button:disabled { opacity: 0.45; cursor: wait; }
+
     .list {
       display: flex;
       flex-direction: column;
       gap: 6px;
-      max-height: 220px;
+      max-height: 210px;
       overflow-y: auto;
     }
     .item {
       background: var(--bg);
       border: 1px solid var(--border);
-      border-radius: 6px;
+      border-radius: 7px;
       padding: 8px 10px;
       font-size: 0.78rem;
       font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -211,27 +271,17 @@
 <body>
   <header>
     <div class="brand">
-      <div class="mascot-wrap" id="mascot-wrap" title="Zash — The Stealth Cashew">
-        <!-- Inline SVG Zash Mascot: Masked Cashew with Glowing ZK Visor & Privacy Shield -->
-        <svg width="42" height="42" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M38 8C23 8 13 19 13 33C13 46 22 55 34 55C43 55 49 49 49 42C49 36 44 33 39 33C34 33 31 29 33 24C35 19 42 18 46 14C49 11 45 8 38 8Z" fill="#E3B363" stroke="#F7931A" stroke-width="2"/>
-          <!-- ZK Domino Visor Mask -->
-          <rect x="14" y="21" width="24" height="10" rx="5" fill="#1E1438" stroke="#8B5CF6" stroke-width="2"/>
-          <circle cx="22" cy="26" r="2.2" fill="#A78BFA"/>
-          <circle cx="31" cy="26" r="2.2" fill="#A78BFA"/>
-          <!-- Mini Privacy Shield -->
-          <path d="M47 36L56 40V47C56 52 52 56 47 58C42 56 38 52 38 47V40L47 36Z" fill="#1F2937" stroke="#2EA043" stroke-width="2"/>
-          <path d="M43.5 47L46 49.5L51 44.5" stroke="#3FB950" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
+      <div class="mascot-wrap" id="mascot-wrap" title="Zashi — The Stealth Cashew Ninja">
+        <img src="/assets/zashi-mascot.jpg" alt="Zashi" />
       </div>
       <div>
         <h1><span>Zashu</span> — ZK-Cashu Glass-Box Playground</h1>
-        <div class="subtitle">Meet <b>Zash</b>: Halo 2 Pasta/IPA (<code>k=13</code> unified Merkle + Range) · Tachyon Accumulators · NUTZ-1..4</div>
+        <div class="subtitle">Two Wallets · One Blindfolded Mint · Independent <code>NUTZ-1</code> Auditor · <a href="/" style="color:var(--violet);text-decoration:none;">← Home</a></div>
       </div>
     </div>
     <div class="row">
       <span class="badge zk" id="session-badge">session: ...</span>
-      <span class="badge" id="latency-badge">idle</span>
+      <span class="badge" id="latency-badge">ready</span>
       <button onclick="resetDemo()">Reset Session</button>
     </div>
   </header>
@@ -241,39 +291,30 @@
     <div class="step active" id="st-1"><b>1. Mint Arbitrary Note</b>Create 137 sats in 1 single note</div>
     <div class="step" id="st-2"><b>2. Shield Legacy Cashu</b>Merge 128+8+1 tokens (0 LN fee)</div>
     <div class="step" id="st-3"><b>3. Stealth Send (Offline)</b>Unified k=13 swap to Bob's zsp1</div>
-    <div class="step" id="st-4"><b>4. Try Double-Spend</b>Replay nullifier & watch mint block</div>
-    <div class="step" id="st-5"><b>5. Bob Syncs & Audit</b>Oblivious sync + NUTZ-1 verification</div>
+    <div class="step" id="st-4"><b>4. Try Double-Spend</b>Replay nullifier &amp; watch mint block</div>
+    <div class="step" id="st-5"><b>5. Bob Syncs &amp; Audit</b>Oblivious sync + NUTZ-1 verification</div>
   </div>
 
-  <!-- Legacy vs Zashu Side-by-Side Comparison -->
-  <div class="diff-bar">
-    <div class="diff-card">
-      <b>Legacy Cashu (BDHKE) for 137 sats:</b>
-      <div style="margin-top:6px;">
-        <span class="pill">128 sat</span><span class="pill">8 sat</span><span class="pill">1 sat</span>
-        <span class="mono">→ 3 tokens, power-of-2 fingerprint, online swap race</span>
+  <!-- Row 1: Two Realistic Wallets -->
+  <div class="section-label">User Wallets (Client-Side Keys &amp; ZK Proving)</div>
+  <div class="wallets-grid">
+    <!-- Alice's Wallet -->
+    <section class="wallet-box">
+      <div class="wallet-top">
+        <div class="wallet-title"><span class="avatar alice">A</span> Alice's Wallet</div>
+        <span class="badge zk">Cashu + Zashu</span>
       </div>
-    </div>
-    <div class="diff-card zashu">
-      <b>Zashu Mode B (NUTZ-2/3) for 137 sats:</b>
-      <div style="margin-top:6px;">
-        <span class="pill zk">137 sat (1 Pedersen Note)</span>
-        <span class="mono">→ Hidden amount, unified k=13 proof, offline-safe stealth</span>
+      <div class="balance-card">
+        <div>
+          <div class="balance-lbl">Shielded Balance</div>
+          <div class="balance" id="alice-bal">0 sats</div>
+        </div>
+        <div class="mono" style="text-align:right;">1 note = exact amount<br/>(no 128+8+1 split)</div>
       </div>
-    </div>
-  </div>
-
-  <div class="grid">
-    <!-- Panel 1: Alice -->
-    <section class="panel">
-      <h2>1. Alice's Wallet <span class="badge zk">Mode B + Interop</span></h2>
-      <div class="balance" id="alice-bal">0 sats</div>
       <div class="row">
         <input id="mint-amt" type="number" value="137" min="1" />
         <button id="btn-mint" class="primary next-hint" onclick="act('/v1/demo/mint', {amount: +val('mint-amt')}, 'Proving ZkMint & inserting note...')">Mint Arbitrary Note</button>
-      </div>
-      <div class="row">
-        <button id="btn-shield" onclick="act('/v1/demo/shield_legacy', {amount: 137}, 'Shielding legacy 128+8+1 BDHKE into 1 note...')">Shield Legacy 137 sats (128+8+1 → 1)</button>
+        <button id="btn-shield" onclick="act('/v1/demo/shield_legacy', {amount: 137}, 'Merging 128+8+1 legacy Cashu tokens into 1 note...')">Shield Legacy 137 (128+8+1 → 1)</button>
       </div>
       <div class="row">
         <input id="send-amt" type="number" value="37" min="1" />
@@ -284,29 +325,53 @@
       <div class="list" id="alice-notes"></div>
     </section>
 
-    <!-- Panel 2: Bob -->
-    <section class="panel">
-      <h2>2. Bob's Wallet <span class="badge" id="bob-status">Offline</span></h2>
-      <div class="balance" id="bob-bal">0 sats</div>
-      <div class="mono" id="bob-addr">zsp1...</div>
+    <!-- Bob's Wallet -->
+    <section class="wallet-box">
+      <div class="wallet-top">
+        <div class="wallet-title"><span class="avatar bob">B</span> Bob's Wallet</div>
+        <span class="badge" id="bob-status">Offline</span>
+      </div>
+      <div class="balance-card">
+        <div>
+          <div class="balance-lbl">Shielded Balance</div>
+          <div class="balance" id="bob-bal">0 sats</div>
+        </div>
+        <div class="mono" id="bob-addr" style="max-width:220px;text-align:right;">zsp1...</div>
+      </div>
       <div class="row">
-        <button id="btn-bob" class="primary" onclick="act('/v1/demo/bob_sync', {}, 'Running Oblivious Sync & decrypting stealth memos...')">Come Online & Oblivious Sync</button>
+        <button id="btn-bob" class="primary" onclick="act('/v1/demo/bob_sync', {}, 'Running Oblivious Sync & decrypting stealth memos...')">Come Online &amp; Oblivious Sync</button>
       </div>
       <div class="mono">Bob's Decrypted Notes:</div>
       <div class="list" id="bob-notes"></div>
     </section>
+  </div>
 
-    <!-- Panel 3: What the Mint Sees -->
-    <section class="panel">
-      <h2>3. What the Mint Sees (X-Ray) <span class="badge">Zero Knowledge</span></h2>
-      <div class="mono" id="mint-state">epoch=0 | liabilities=0</div>
-      <div class="list" id="xray-logs" style="max-height: 310px;"></div>
+  <!-- Row 2: The Mint Box + Independent Auditor Box -->
+  <div class="section-label">Mint Infrastructure &amp; Public Verification</div>
+  <div class="infra-grid">
+    <!-- Mint Box -->
+    <section class="mint-box">
+      <div class="box-head">
+        <h2>Cashu + Zashu Mint (Blindfolded Server X-Ray)</h2>
+        <span class="badge">Zero Knowledge</span>
+      </div>
+      <div class="mint-stats">
+        <div class="stat-pill"><span>Epoch</span><b id="m-epoch">0</b></div>
+        <div class="stat-pill"><span>Total Liabilities</span><b id="m-liab">0 sats</b></div>
+        <div class="stat-pill"><span>L1 BTC Reserves</span><b id="m-res">10,000,000 sats</b></div>
+      </div>
+      <div class="mono">Live Wire Log (Exact payloads seen by the Mint):</div>
+      <div class="list" id="xray-logs" style="max-height: 240px;"></div>
     </section>
 
-    <!-- Panel 4: NUTZ-1 Solvency Auditor -->
-    <section class="panel">
-      <h2>4. Live NUTZ-1 Auditor <span class="badge ok" id="audit-badge">SOLVENT</span></h2>
-      <div class="mono" id="audit-summary">Verifying...</div>
+    <!-- NUTZ-1 Solvency Auditor Box -->
+    <section class="auditor-box" id="auditor-box">
+      <div class="box-head">
+        <h2>NUTZ-1 Solvency Auditor</h2>
+        <span class="badge ok" id="audit-badge">SOLVENT</span>
+      </div>
+      <div class="mono">Independent watchdog verifying <code>Proof of Liabilities ≤ L1 Reserves</code></div>
+      <div class="item" id="audit-summary">Verifying...</div>
       <div class="row">
         <button onclick="runAudit(false)">Verify Honest Mint</button>
         <button class="danger" onclick="runAudit(true)">Simulate Evil Mint (Fractional Reserve)</button>
@@ -360,7 +425,7 @@
     function render(st) {
       document.getElementById('alice-bal').textContent = `${st.alice_balance} sats`;
       document.getElementById('bob-bal').textContent = `${st.bob_balance} sats`;
-      document.getElementById('bob-addr').textContent = `Stealth addr: ${st.bob_address.slice(0, 38)}...`;
+      document.getElementById('bob-addr').textContent = `Stealth: ${st.bob_address.slice(0, 22)}...`;
       document.getElementById('bob-status').textContent =
         st.bob_pending_memos > 0 ? `${st.bob_pending_memos} pending (offline)` : `Synced @ ep ${st.bob_synced_epoch}`;
       document.getElementById('latency-badge').textContent =
@@ -375,27 +440,30 @@
       renderNotes('alice-notes', st.alice_notes);
       renderNotes('bob-notes', st.bob_notes);
 
-      document.getElementById('mint-state').textContent =
-        `epoch=${st.mint_state.epoch} | liabilities=${st.mint_state.total_liabilities} sats | reserves=${st.reserve_sats} sats`;
+      document.getElementById('m-epoch').textContent = st.mint_state.epoch;
+      document.getElementById('m-liab').textContent = `${st.mint_state.total_liabilities.toLocaleString()} sats`;
+      document.getElementById('m-res').textContent = `${st.reserve_sats.toLocaleString()} sats`;
 
       document.getElementById('xray-logs').innerHTML = st.xray_logs.length ? st.xray_logs.map(l =>
         `<div class="item">
           <div><b>${l.endpoint}</b> — ${l.summary}</div>
           <div class="mono">${JSON.stringify(l.opaque_payload)}</div>
-          <div class="xray-hidden">Hidden: ${l.hidden_from_mint}</div>
+          <div class="xray-hidden">Hidden from Mint: ${l.hidden_from_mint}</div>
         </div>`
-      ).join('') : '<div class="mono">Click Step 1 on Alice to watch opaque ZK payloads arrive.</div>';
+      ).join('') : '<div class="mono">Click Step 1 in Alice\'s Wallet to watch opaque ZK payloads arrive.</div>';
 
       renderAudit(st.audit);
       updateStepper(st);
     }
 
     function renderAudit(a) {
+      const box = document.getElementById('auditor-box');
+      box.className = `auditor-box ${a.solvent ? '' : 'failed'}`;
       const badge = document.getElementById('audit-badge');
       badge.textContent = a.solvent ? 'SOLVENT' : 'FAILED';
       badge.className = `badge ${a.solvent ? 'ok' : 'fail'}`;
       document.getElementById('audit-summary').textContent =
-        `Epoch ${a.epoch} | Liabilities: ${a.total_liabilities} sats <= Reserves: ${a.total_reserves} sats`;
+        `Epoch ${a.epoch} | Liabilities: ${a.total_liabilities.toLocaleString()} sats <= Reserves: ${a.total_reserves.toLocaleString()} sats`;
       document.getElementById('audit-detail').textContent = a.solvent
         ? `Verified NUTZ-1 folded PCD proof + Taproot Schnorr reserves in ${a.verify_ms} ms.`
         : `AUDIT REJECTED: ${a.error}`;
