@@ -10,6 +10,8 @@ axum.workspace = true
 base64.workspace = true
 bitcoin.workspace = true
 clap.workspace = true
+ff.workspace = true
+group.workspace = true
 hex.workspace = true
 pasta_curves.workspace = true
 rand.workspace = true
@@ -22,10 +24,12 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 zashu-acc.workspace = true
+zashu-auditor.workspace = true
 zashu-circuits.workspace = true
 zashu-core.workspace = true
 
 [dev-dependencies]
 ff.workspace = true
 group.workspace = true
-zashu-auditor.workspace = true
+http = "1"
+tower = { version = "0.5", features = ["util"] }

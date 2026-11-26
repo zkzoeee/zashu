@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Zashu — ZK-Cashu Interactive Glass-Box Playground</title>
+  <style>
+    :root {
+      --bg: #0b0f17;
+      --panel: #131a26;
+      --border: #243044;
+      --text: #e6edf3;
+      --muted: #8b9bb4;
+      --accent: #f7931a;
+      --green: #2ea043;
+      --red: #f85149;
+      --blue: #58a6ff;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding: 20px;
+    }
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 14px;
+    }
+    h1 { margin: 0; font-size: 1.4rem; }
+    h1 span { color: var(--accent); }
+    .subtitle { color: var(--muted); font-size: 0.9rem; margin-top: 4px; }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .panel h2 {
+      margin: 0;
+      font-size: 1.05rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .badge {
+      font-size: 0.75rem;
+      padding: 3px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+      background: #1f2937;
+      color: var(--muted);
+    }
+    .badge.ok { background: rgba(46, 160, 67, 0.2); color: #3fb950; border: 1px solid var(--green); }
+    .badge.fail { background: rgba(248, 81, 73, 0.2); color: #ff7b72; border: 1px solid var(--red); }
+    .balance { font-size: 1.6rem; font-weight: 700; color: var(--accent); }
+    .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+    input[type="number"] {
+      width: 100px;
+      padding: 7px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--bg);
+      color: var(--text);
+    }
+    button {
+      padding: 8px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: #1f2a3c;
+      color: var(--text);
+      cursor: pointer;
+      font-weight: 600;
+      font-size: 0.85rem;
+    }
+    button:hover { background: #2a3950; }
+    button.primary { background: var(--accent); color: #111; border-color: var(--accent); }
+    button.danger { background: rgba(248, 81, 73, 0.15); border-color: var(--red); color: #ff7b72; }
+    button:disabled { opacity: 0.5; cursor: wait; }
+    .list {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      max-height: 220px;
+      overflow-y: auto;
+    }
+    .item {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 8px 10px;
+      font-size: 0.8rem;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .item.spent { opacity: 0.45; text-decoration: line-through; }
+    .xray-hidden { color: #3fb950; font-size: 0.75rem; margin-top: 4px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.78rem; color: var(--muted); word-break: break-all; }
+    #toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #1f2a3c;
+      border: 1px solid var(--accent);
+      padding: 10px 14px;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      display: none;
+      max-width: 380px;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1><span>Zashu</span> — ZK-Cashu Glass-Box Playground</h1>
+      <div class="subtitle">Real Halo 2 (Pasta/IPA, k=13 Merkle + Range) + Tachyon Accumulators + NUTZ-1 Solvency</div>
+    </div>
+    <div class="row">
+      <button onclick="resetDemo()">Reset Playground</button>
+    </div>
+  </header>
+
+  <div class="grid">
+    <!-- Panel 1: Alice -->
+    <section class="panel">
+      <h2>1. Alice's Wallet <span class="badge">Mode B + Interop</span></h2>
+      <div class="balance" id="alice-bal">0 sats</div>
+      <div class="row">
+        <input id="mint-amt" type="number" value="137" min="1" />
+        <button class="primary" onclick="act('/v1/demo/mint', {amount: +val('mint-amt')}, 'Minting arbitrary note...')">Mint Arbitrary Note</button>
+      </div>
+      <div class="row">
+        <button onclick="act('/v1/demo/shield_legacy', {amount: 137}, 'Shielding legacy 128+8+1 BDHKE...')">Shield Legacy 137 sats (128+8+1 → 1)</button>
+      </div>
+      <div class="row">
+        <input id="send-amt" type="number" value="37" min="1" />
+        <button class="primary" onclick="act('/v1/demo/stealth_send', {amount: +val('send-amt')}, 'Generating k=13 unified ZK swap proof...')">Stealth Send to Bob (Offline)</button>
+        <button class="danger" onclick="doubleSpend()">Try Double-Spend!</button>
+      </div>
+      <div class="mono">Alice's Shielded Notes:</div>
+      <div class="list" id="alice-notes"></div>
+    </section>
+
+    <!-- Panel 2: Bob -->
+    <section class="panel">
+      <h2>2. Bob's Wallet <span class="badge" id="bob-status">Offline</span></h2>
+      <div class="balance" id="bob-bal">0 sats</div>
+      <div class="mono" id="bob-addr">zsp1...</div>
+      <div class="row">
+        <button class="primary" onclick="act('/v1/demo/bob_sync', {}, 'Running Oblivious Sync & decrypting stealth memos...')">Come Online & Oblivious Sync</button>
+      </div>
+      <div class="mono">Bob's Decrypted Notes:</div>
+      <div class="list" id="bob-notes"></div>
+    </section>
+
+    <!-- Panel 3: What the Mint Sees -->
+    <section class="panel">
+      <h2>3. What the Mint Sees (X-Ray) <span class="badge">Zero Knowledge</span></h2>
+      <div class="mono" id="mint-state">epoch=0 | liabilities=0</div>
+      <div class="list" id="xray-logs" style="max-height: 330px;"></div>
+    </section>
+
+    <!-- Panel 4: NUTZ-1 Solvency Auditor -->
+    <section class="panel">
+      <h2>4. Live NUTZ-1 Auditor <span class="badge ok" id="audit-badge">SOLVENT</span></h2>
+      <div class="mono" id="audit-summary">Verifying...</div>
+      <div class="row">
+        <button onclick="runAudit(false)">Verify Honest Mint</button>
+        <button class="danger" onclick="runAudit(true)">Simulate Evil Mint (Fractional Reserve)</button>
+      </div>
+      <div class="item" id="audit-detail"></div>
+    </section>
+  </div>
+
+  <div id="toast"></div>
+
+  <script>
+    const val = (id) => document.getElementById(id).value;
+    function toast(msg) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.style.display = 'block';
+      clearTimeout(window._t);
+      window._t = setTimeout(() => el.style.display = 'none', 4000);
+    }
+
+    function setBusy(busy) {
+      document.querySelectorAll('button').forEach(b => b.disabled = busy);
+    }
+
+    function render(st) {
+      document.getElementById('alice-bal').textContent = `${st.alice_balance} sats`;
+      document.getElementById('bob-bal').textContent = `${st.bob_balance} sats`;
+      document.getElementById('bob-addr').textContent = `Stealth addr: ${st.bob_address.slice(0, 36)}...`;
+      document.getElementById('bob-status').textContent =
+        st.bob_pending_memos > 0 ? `${st.bob_pending_memos} pending (offline)` : `Synced @ ep ${st.bob_synced_epoch}`;
+
+      const renderNotes = (elId, notes) => {
+        const el = document.getElementById(elId);
+        el.innerHTML = notes.length ? notes.map(n =>
+          `<div class="item ${n.spent ? 'spent' : ''}">#${n.leaf_index} | <b>${n.value} sats</b> | cm=${n.commitment} ${n.spent ? '(SPENT)' : ''}</div>`
+        ).join('') : '<div class="mono">No notes yet.</div>';
+      };
+      renderNotes('alice-notes', st.alice_notes);
+      renderNotes('bob-notes', st.bob_notes);
+
+      document.getElementById('mint-state').textContent =
+        `epoch=${st.mint_state.epoch} | liabilities=${st.mint_state.total_liabilities} sats | reserves=${st.reserve_sats} sats`;
+
+      document.getElementById('xray-logs').innerHTML = st.xray_logs.length ? st.xray_logs.map(l =>
+        `<div class="item">
+          <div><b>${l.endpoint}</b> — ${l.summary}</div>
+          <div class="mono">${JSON.stringify(l.opaque_payload)}</div>
+          <div class="xray-hidden">Hidden: ${l.hidden_from_mint}</div>
+        </div>`
+      ).join('') : '<div class="mono">Click an action on Alice to watch opaque ZK payloads arrive.</div>';
+
+      renderAudit(st.audit);
+    }
+
+    function renderAudit(a) {
+      const badge = document.getElementById('audit-badge');
+      badge.textContent = a.solvent ? 'SOLVENT' : 'FAILED';
+      badge.className = `badge ${a.solvent ? 'ok' : 'fail'}`;
+      document.getElementById('audit-summary').textContent =
+        `Epoch ${a.epoch} | Liabilities: ${a.total_liabilities} sats <= Reserves: ${a.total_reserves} sats`;
+      document.getElementById('audit-detail').textContent = a.solvent
+        ? `Verified NUTZ-1 folded PCD proof + Taproot Schnorr reserves in ${a.verify_ms} ms.`
+        : `AUDIT REJECTED: ${a.error}`;
+    }
+
+    async function refresh() {
+      const r = await fetch('/v1/demo/state');
+      render(await r.json());
+    }
+
+    async function act(url, body, msg) {
+      setBusy(true);
+      toast(msg);
+      try {
+        const r = await fetch(url, {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify(body)
+        });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'request failed');
+        render(data);
+        toast('Done!');
+      } catch (e) {
+        toast('Error: ' + e.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function doubleSpend() {
+      setBusy(true);
+      try {
+        const r = await fetch('/v1/demo/double_spend', { method: 'POST' });
+        const data = await r.json();
+        if (!r.ok) throw new Error(data.error || 'failed');
+        render(data.state);
+        toast(`Double-spend blocked: ${data.reason}`);
+      } catch (e) {
+        toast('Error: ' + e.message);
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function runAudit(tamper) {
+      setBusy(true);
+      try {
+        const r = await fetch('/v1/demo/audit', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({ tamper_fractional: tamper })
+        });
+        renderAudit(await r.json());
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function resetDemo() {
+      setBusy(true);
+      const r = await fetch('/v1/demo/reset', { method: 'POST' });
+      render(await r.json());
+      setBusy(false);
+      toast('Playground reset.');
+    }
+
+    refresh();
+  </script>
+</body>
+</html>

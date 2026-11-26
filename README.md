@@ -7,11 +7,12 @@
 * **Mode A (`NUTZ-1`) — Verifiable Mint Solvency:** Drop-in sidecar for existing Cashu (CDK) and Fedimint mints. Continuously folds `mint`/`swap`/`melt` accounting into a constant-size ZK proof that `total_liabilities <= reserves`, with prunable nullifier accumulators and zero changes to legacy Cashu wallets.
 * **Mode B (`NUTZ-2`, `NUTZ-3`, `NUTZ-4`) — Full ZK-Ecash:** Arbitrary hidden amounts (no power-of-2 splitting), hidden programmable spending conditions (`P2PK`, `Multisig`, `Timelock`, `PrivateHTLC`, `CrossMintSwap`), oblivious mobile witness sync, and double-spend-proof stealth async P2P receives—interoperating zero-fee with standard Cashu inside the same mint via `/v1/zk/shield` and `/v1/zk/unshield`.
 
-## Quickstart (Local / Signet Demo)
+## Quickstart (Web Playground & Local / Signet Demo)
 
 ```bash
-# 1. Start the unified Mode A + Mode B mint server
+# 1. Start the unified Mode A + Mode B mint server + Interactive Web Playground
 cargo run --release -p zashu-mint
+# Open http://127.0.0.1:8080 in your browser!
 
 # 2. In another terminal: audit mint solvency (dev mode or Signet Esplora)
 cargo run --release -p zashu-auditor -- --allow-unverified-utxos verify http://127.0.0.1:8080
