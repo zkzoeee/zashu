@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [features]
+default = ["ragu"]
 # Ragu PCD backend for shielded transaction proofs; see zashu-circuits.
 ragu = ["zashu-circuits/ragu"]
 

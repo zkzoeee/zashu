@@ -1,5 +1,5 @@
 //! Mode A fold through the Ragu PCD backend.
-//! Run with: `cargo test --release -p zashu-circuits --features ragu --test ragu_fold`
+//! Run with: `cargo test --release -p zashu-circuits --test ragu_fold`
 #![cfg(feature = "ragu")]
 
 use zashu_circuits::mode_a::{

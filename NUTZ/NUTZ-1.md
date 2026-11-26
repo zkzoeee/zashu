@@ -8,7 +8,7 @@
 ## 1. Motivation
 In standard Chaumian ecash, blind signatures prevent a mint from linking users, but give users **no cryptographic assurance** that the mint is not running a fractional reserve (printing unbacked ecash). Additionally, mints must retain every spent token secret forever, causing unbounded storage growth.
 
-`NUTZ-1` defines a verifiable, constant-size **ZK Solvency Bundle** (`Proof of Liabilities <= Proof of Reserves`) produced by folding the mint's step proofs (recursively with the Ragu backend, as a batch proof with the default Halo 2 backend; see §2.1) alongside a prunable epoch nullifier accumulator.
+`NUTZ-1` defines a verifiable, constant-size **ZK Solvency Bundle** (`Proof of Liabilities <= Proof of Reserves`) produced by folding the mint's step proofs (recursively with the default Ragu backend, as a batch proof with the fallback Halo 2 backend; see §2.1) alongside a prunable epoch nullifier accumulator.
 
 ---
 
@@ -36,8 +36,8 @@ At the end of every epoch $E$, the mint commits to a deterministic `MintState`:
 
 `state_hash = Poseidon3(Poseidon4(DOMAIN_STATE, epoch, total_liabilities, nullifier_acc_root), note_acc_root, event_log_hash)`.
 
-* **Ragu backend** (`ZASHU_PCD_BACKEND=ragu`): every step is a Ragu step circuit that opens both of its state hashes, checks the liabilities arithmetic for its kind (mint adds, melt subtracts, swap conserves) and that the epoch does not decrease. A recursive fold step enforces that consecutive steps chain on state hash and liabilities. The published proof therefore attests the whole chain from the genesis state to the current one. Steps do not constrain how the accumulator roots and event log change.
-* **Halo 2 backend** (default): the folder verifies the step proofs itself and emits one proof whose public inputs are the start and end state hashes and liabilities. An auditor trusts the folder for the steps in between.
+* **Ragu backend** (default): every step is a Ragu step circuit that opens both of its state hashes, checks the liabilities arithmetic for its kind (mint adds, melt subtracts, swap conserves) and that the epoch does not decrease. A recursive fold step enforces that consecutive steps chain on state hash and liabilities. The published proof therefore attests the whole chain from the genesis state to the current one. Steps do not constrain how the accumulator roots and event log change.
+* **Halo 2 backend** (`ZASHU_PCD_BACKEND=halo2`): the folder verifies the step proofs itself and emits one proof whose public inputs are the start and end state hashes and liabilities. An auditor trusts the folder for the steps in between.
 
 ---
 

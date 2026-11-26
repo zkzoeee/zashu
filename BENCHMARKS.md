@@ -1,8 +1,8 @@
 # Zashu Benchmarks
 
-Measured in `--release` on Apple Silicon using `cargo run --release -p zashu-circuits --example bench_fold_and_prune --offline`.
+Measured in `--release` on Apple Silicon. Ragu is the default backend; the Halo 2 figures in section 1 come from `ZASHU_PCD_BACKEND=halo2 cargo run --release -p zashu-circuits --example bench_fold_and_prune`.
 
-## 1. Mode A Folding, Halo 2 backend (`k = 8`, Pasta/IPA, default)
+## 1. Mode A Folding, Halo 2 backend (`k = 8`, Pasta/IPA, fallback)
 
 | Batch Size | Step Proving (total) | Tree Fold Time | Verification Time | Folded Proof Size (Base64) |
 | :--- | :--- | :--- | :--- | :--- |
@@ -12,9 +12,9 @@ Measured in `--release` on Apple Silicon using `cargo run --release -p zashu-cir
 
 The Halo 2 fold verifies the step proofs natively and proves only the endpoints, which is why it is fast.
 
-## 1b. Ragu PCD backend (`--features ragu`, rank 14)
+## 1b. Ragu PCD backend (default, rank 14)
 
-Measured with `ZASHU_PCD_BACKEND=ragu cargo run --release -p zashu-circuits --features ragu --example bench_fold_and_prune` on a 10-core Apple Silicon laptop. Timings vary a lot from run to run; treat them as scale, not as reproducible figures.
+Measured with `cargo run --release -p zashu-circuits --example bench_fold_and_prune` on a 10-core Apple Silicon laptop. Timings vary a lot from run to run; treat them as scale, not as reproducible figures.
 
 | Workload | Proving | Verification | Proof Size |
 | :--- | :--- | :--- | :--- |

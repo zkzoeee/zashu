@@ -17,7 +17,8 @@ use crate::range_check::RangeCheck64Config;
 #[cfg(feature = "ragu")]
 pub mod ragu_backend;
 
-/// Environment variable read by [`FoldBackend::from_env`]: `halo2` (default) or `ragu`.
+/// Environment variable read by [`FoldBackend::from_env`]: `ragu` or `halo2`.
+/// Unset selects Ragu when it is compiled in (the default build), else Halo 2.
 pub const PCD_BACKEND_ENV: &str = "ZASHU_PCD_BACKEND";
 /// Older name for [`PCD_BACKEND_ENV`], still honoured when that one is unset.
 pub const FOLD_BACKEND_ENV: &str = "ZASHU_FOLD_BACKEND";
@@ -29,26 +30,29 @@ pub const FOLD_BACKEND_ENV: &str = "ZASHU_FOLD_BACKEND";
 pub enum FoldBackend {
     /// Steps are verified natively by the folder; the folded Halo 2 proof only
     /// exposes the endpoints as public inputs.
-    #[default]
+    #[cfg_attr(not(feature = "ragu"), default)]
     Halo2,
     /// Recursive Ragu PCD: the folded proof attests every step and the chaining
-    /// between them. Requires the `ragu` cargo feature.
+    /// between them. Requires the `ragu` cargo feature, which is on by
+    /// default; this is then the default backend.
+    #[cfg_attr(feature = "ragu", default)]
     Ragu,
 }
 
 impl FoldBackend {
     /// Reads [`PCD_BACKEND_ENV`], falling back to [`FOLD_BACKEND_ENV`]. Unset
-    /// or empty selects Halo 2.
+    /// or empty selects the default backend.
     pub fn from_env() -> Result<Self> {
         let (name, value) = match std::env::var(PCD_BACKEND_ENV) {
             Ok(v) => (PCD_BACKEND_ENV, v),
             Err(_) => match std::env::var(FOLD_BACKEND_ENV) {
                 Ok(v) => (FOLD_BACKEND_ENV, v),
-                Err(_) => return Ok(Self::Halo2),
+                Err(_) => return Ok(Self::default()),
             },
         };
         match value.trim().to_ascii_lowercase().as_str() {
-            "" | "halo2" => Ok(Self::Halo2),
+            "" => Ok(Self::default()),
+            "halo2" => Ok(Self::Halo2),
             "ragu" => Ok(Self::Ragu),
             other => Err(CircuitError::InvalidWitness(format!(
                 "{name}={other:?}: expected \"halo2\" or \"ragu\""
@@ -614,7 +618,7 @@ pub fn verify_mode_a_step(proof: &FoldedProof) -> Result<()> {
 }
 
 /// Folds a contiguous sequence of Mode A step proofs into a single proof, using
-/// the backend selected by [`FoldBackend::from_env`] (Halo 2 unless overridden).
+/// the backend selected by [`FoldBackend::from_env`].
 pub fn fold_mode_a_batch(
     start_state: &MintState,
     end_state: &MintState,

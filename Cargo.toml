@@ -12,7 +12,7 @@ members = [
 
 [workspace.package]
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.97.1"
 license = "MIT"
 version = "0.1.0"
 
@@ -48,8 +48,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 zashu-core = { path = "crates/zashu-core" }
 zashu-acc = { path = "crates/zashu-acc" }
-zashu-circuits = { path = "crates/zashu-circuits" }
+zashu-circuits = { path = "crates/zashu-circuits", default-features = false }
 zashu-mint = { path = "crates/zashu-mint" }
 zashu-cdk-sidecar = { path = "crates/zashu-cdk-sidecar" }
-zashu-auditor = { path = "crates/zashu-auditor" }
+zashu-auditor = { path = "crates/zashu-auditor", default-features = false }
 zashu-wallet = { path = "crates/zashu-wallet" }

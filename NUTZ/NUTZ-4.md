@@ -2,7 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode B (Non-Uniform Ragu Subcircuits)
-* **Implementation:** enforced in-circuit by the Ragu backend (`ZASHU_PCD_BACKEND=ragu`) for `0x00`, `0x01`, `0x03` and `0x04`. The default Halo 2 backend, and `0x02` on either backend, check the predicate in the wallet only.
+* **Implementation:** enforced in-circuit by the default Ragu backend for `0x00`, `0x01`, `0x03` and `0x04`. The fallback Halo 2 backend (`ZASHU_PCD_BACKEND=halo2`), and `0x02` on either backend, check the predicate in the wallet only.
 
 ---
 

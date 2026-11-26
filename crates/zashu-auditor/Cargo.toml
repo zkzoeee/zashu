@@ -5,6 +5,7 @@ version.workspace = true
 license.workspace = true
 
 [features]
+default = ["ragu"]
 # Ragu PCD backend for the Mode A fold; see zashu-circuits.
 ragu = ["zashu-circuits/ragu"]
 
