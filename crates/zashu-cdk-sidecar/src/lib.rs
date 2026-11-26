@@ -184,9 +184,13 @@ impl EpochFolder {
 
     pub fn seal_epoch(&mut self, events: &[MintEvent]) -> Result<SolvencyBundle> {
         let start_state = self.current_state.clone();
-        let mut step_proofs: Vec<FoldedProof> = Vec::with_capacity(events.len().max(1));
+        let mut step_proofs: Vec<FoldedProof> = Vec::with_capacity(events.len() + 1);
         let mut state = start_state.clone();
         state.epoch += 1;
+        // The epoch advance is its own zero-delta step, so the step chain starts
+        // exactly at `start_state`. It also serves as the heartbeat for an
+        // epoch with no events.
+        step_proofs.push(prove_swap_step(&start_state, &state, 0, 0, &[])?);
 
         for ev in events {
             let prev = state.clone();
@@ -228,11 +232,6 @@ impl EpochFolder {
                     step_proofs.push(prove_melt_step(&prev, &state, *amount)?);
                 }
             }
-        }
-
-        if step_proofs.is_empty() {
-            // Empty heartbeat epoch: fold a zero-delta swap step
-            step_proofs.push(prove_swap_step(&start_state, &state, 0, 0, &[])?);
         }
 
         self.nf_acc.seal_epoch();
