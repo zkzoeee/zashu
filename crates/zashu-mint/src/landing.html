@@ -273,7 +273,8 @@
       </div>
       <div class="nav-links">
         <a href="#cashu-synergy">Cashu + Zashu</a>
-        <a href="#how-it-works">How It Works</a>
+        <a href="#how-it-works">Architecture</a>
+        <a href="#zk-mobile">ZK &amp; Mobile</a>
         <a href="#zashi">Meet Zashi</a>
         <a href="/playground" class="btn primary">Launch Playground →</a>
       </div>
@@ -392,6 +393,34 @@
           <span class="tag-sm">LAYER 4 · NUTZ-3 &amp; 4</span>
           <h3>Oblivious Sync &amp; Predicates</h3>
           <p>Wallets refresh Merkle witnesses via <code>GET /v1/zk/sync</code> without leaking note indices, and run hidden HTLCs across mints.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- 3b. How ZK Works & Mobile-First Design -->
+    <section class="section" id="zk-mobile">
+      <div class="section-head">
+        <h2>How ZK Works in Zashu — and Why It Runs Smoothly on Mobile</h2>
+        <p>Zero-knowledge doesn't have to mean slow phones, drained batteries, or 100 MB proving keys. Zashu is engineered from day one for mobile Cashu wallets.</p>
+      </div>
+
+      <div class="compare">
+        <div class="compare-box zashu">
+          <h3>How Zero-Knowledge Works (In 3 Steps)</h3>
+          <ul>
+            <li><b>1. Hide with Commitments:</b> Your note's exact amount (<code>137 sats</code>), owner key, and spending policy are locked inside a <b>Pedersen commitment</b> + <b>Poseidon hash</b>—binding mathematically, invisible to the mint.</li>
+            <li><b>2. Prove Rules Without Data:</b> Spending creates one compact <b>Halo 2 (Pasta/IPA)</b> proof proving: (a) your note is in the mint's Merkle tree, (b) inputs equal outputs with 64-bit overflow protection, and (c) you satisfy the hidden policy.</li>
+            <li><b>3. Fold &amp; Prune (Ragu + Tachyon):</b> The mint recursively folds hundreds of transitions into <b>one ~16 KB <code>NUTZ-1</code> proof</b>, while Tachyon accumulators prune old nullifiers so storage stays flat.</li>
+          </ul>
+        </div>
+        <div class="compare-box">
+          <h3>Why It Runs Great on Mobile Phones</h3>
+          <ul>
+            <li><b>Hybrid BDHKE + ZK:</b> Everyday $2 coffee taps still use Cashu's <b>&lt;50 ms BDHKE</b> blind signatures. Phones only run ZK when shielding savings, sending offline-safe stealth notes, or locking private HTLCs.</li>
+            <li><b>Tiny Modular Circuits (Ragu):</b> No bloated zkVM—each action runs only the minimal subcircuit it needs (<code>k=8</code> for minting/folding, <code>k=13</code> for unified swaps), verifying in <b>~1 ms</b>.</li>
+            <li><b>No 100 MB Proving Keys:</b> Halo 2 on Pasta curves requires <b>no trusted setup</b>, eliminating giant ceremony downloads on mobile apps.</li>
+            <li><b>Oblivious Sync (Zero Full-Chain Scan):</b> Unlike legacy privacy wallets that trial-decrypt every transaction on the network, <code>GET /v1/zk/sync</code> pulls compact epoch deltas—battery &amp; data scale with <i>your</i> activity, not global volume.</li>
+          </ul>
         </div>
       </div>
     </section>
