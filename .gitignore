@@ -2,3 +2,5 @@
 **/*.rs.bk
 *.sqlite
 zashu-wallet.json
+/video/node_modules
+/video/out
