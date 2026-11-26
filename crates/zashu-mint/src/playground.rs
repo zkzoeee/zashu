@@ -1,7 +1,9 @@
+use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -27,9 +29,10 @@ use zashu_core::stealth::{
 };
 use zashu_core::types::{MintState, Note};
 
-use crate::{
-    MintReserveKey, ZashuMint, ZkMintRequest, ZkShieldRequest, ZkSwapRequest,
-};
+use crate::{MintReserveKey, ZashuMint, ZkMintRequest, ZkShieldRequest, ZkSwapRequest};
+
+const SESSION_TTL: Duration = Duration::from_secs(30 * 60);
+const MAX_SESSIONS: usize = 256;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DemoNoteView {
@@ -59,6 +62,7 @@ pub struct DemoAuditView {
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DemoStateResponse {
+    pub session_id: String,
     pub alice_balance: u64,
     pub alice_notes: Vec<DemoNoteView>,
     pub bob_address: String,
@@ -68,6 +72,7 @@ pub struct DemoStateResponse {
     pub bob_synced_epoch: u64,
     pub mint_state: MintState,
     pub reserve_sats: u64,
+    pub last_action_ms: u128,
     pub xray_logs: Vec<XRayLogEntry>,
     pub audit: DemoAuditView,
 }
@@ -96,6 +101,7 @@ pub struct PlaygroundSession {
     bob_notes: Vec<DemoStoredNote>,
     pending_memos: Vec<(EncryptedStealthMemo, Fq, u64)>,
     last_spent_swap_req: Option<ZkSwapRequest>,
+    last_action_ms: u128,
     xray_logs: Vec<XRayLogEntry>,
     nonce_counter: u8,
 }
@@ -151,6 +157,7 @@ impl PlaygroundSession {
             bob_notes: Vec::new(),
             pending_memos: Vec::new(),
             last_spent_swap_req: None,
+            last_action_ms: 0,
             xray_logs: Vec::new(),
             nonce_counter: 1,
         }
@@ -177,6 +184,7 @@ impl PlaygroundSession {
         if amount == 0 {
             return Err("amount must be > 0".into());
         }
+        let t0 = Instant::now();
         let rho = self.next_rand32();
         let r = self.next_rand32();
         let blind = Fq::random(&mut self.rng);
@@ -197,6 +205,7 @@ impl PlaygroundSession {
             proof: proof.to_base64().map_err(|e| e.to_string())?,
         };
         let res = self.mint.zk_mint(req.clone()).map_err(|e| e.to_string())?;
+        self.last_action_ms = t0.elapsed().as_millis();
         self.sync_alice();
         self.alice_notes.push(DemoStoredNote {
             note,
@@ -209,7 +218,10 @@ impl PlaygroundSession {
             0,
             XRayLogEntry {
                 endpoint: "POST /v1/zk/mint".into(),
-                summary: format!("Minted 1 arbitrary shielded note ({amount} sats) at leaf #{}", res.leaf_index),
+                summary: format!(
+                    "Minted 1 arbitrary shielded note ({amount} sats) at leaf #{} in {}ms",
+                    res.leaf_index, self.last_action_ms
+                ),
                 opaque_payload: serde_json::json!({
                     "cm": format!("0x{}...", hex::encode(&cm.0[..6])),
                     "cv": format!("0x{}...", hex::encode(&cv.bytes[..6])),
@@ -225,6 +237,7 @@ impl PlaygroundSession {
         if amount == 0 {
             return Err("amount must be > 0".into());
         }
+        let t0 = Instant::now();
         let mut parts = Vec::new();
         let mut rem = amount;
         let mut bit = 0u32;
@@ -257,6 +270,7 @@ impl PlaygroundSession {
                 proof: proof.to_base64().map_err(|e| e.to_string())?,
             })
             .map_err(|e| e.to_string())?;
+        self.last_action_ms = t0.elapsed().as_millis();
         self.sync_alice();
         self.alice_notes.push(DemoStoredNote {
             note,
@@ -269,7 +283,12 @@ impl PlaygroundSession {
             0,
             XRayLogEntry {
                 endpoint: "POST /v1/zk/shield".into(),
-                summary: format!("Merged {} legacy Cashu BDHKE tokens ({:?}) into 1 Zashu note ({amount} sats, zero LN fee)", parts.len(), parts),
+                summary: format!(
+                    "Merged {} legacy Cashu tokens ({:?}) -> 1 Zashu note ({amount} sats) in {}ms",
+                    parts.len(),
+                    parts,
+                    self.last_action_ms
+                ),
                 opaque_payload: serde_json::json!({
                     "bdhke_denominations": parts,
                     "cm": format!("0x{}...", hex::encode(&cm.0[..6])),
@@ -282,6 +301,7 @@ impl PlaygroundSession {
 
     pub fn stealth_send(&mut self, amount: u64) -> Result<(), String> {
         self.sync_alice();
+        let t0 = Instant::now();
         let idx = self
             .alice_notes
             .iter()
@@ -362,6 +382,7 @@ impl PlaygroundSession {
             proof: proof.to_base64().map_err(|e| e.to_string())?,
         };
         let res = self.mint.zk_swap(req.clone()).map_err(|e| e.to_string())?;
+        self.last_action_ms = t0.elapsed().as_millis();
         self.last_spent_swap_req = Some(req.clone());
         self.alice_notes[idx].spent = true;
         self.sync_alice();
@@ -381,7 +402,10 @@ impl PlaygroundSession {
             0,
             XRayLogEntry {
                 endpoint: "POST /v1/zk/swap (Unified k=13 Proof)".into(),
-                summary: format!("Single-proof stealth swap confirmed (Bob offline, leaf #{})", res.leaf_indices[0]),
+                summary: format!(
+                    "Single-proof stealth swap confirmed (Bob offline, leaf #{}) in {}ms",
+                    res.leaf_indices[0], self.last_action_ms
+                ),
                 opaque_payload: serde_json::json!({
                     "anchor_root": format!("0x{}...", hex::encode(&anchor[..6])),
                     "nullifiers": nfs.iter().map(|n| format!("0x{}...", hex::encode(&n.0[..6]))).collect::<Vec<_>>(),
@@ -398,9 +422,11 @@ impl PlaygroundSession {
         let Some(req) = self.last_spent_swap_req.clone() else {
             return Err("Perform at least one Stealth Send first so Alice has a spent nullifier to replay".into());
         };
+        let t0 = Instant::now();
         match self.mint.zk_swap(req.clone()) {
             Ok(_) => Err("unexpectedly accepted double-spend".into()),
             Err(e) => {
+                self.last_action_ms = t0.elapsed().as_millis();
                 let msg = e.to_string();
                 self.xray_logs.insert(
                     0,
@@ -421,6 +447,7 @@ impl PlaygroundSession {
     }
 
     pub fn bob_sync(&mut self) -> Result<usize, String> {
+        let t0 = Instant::now();
         let sync = self.mint.sync_from_epoch(self.bob_synced_epoch);
         for (_, cm) in &sync.new_commitments {
             self.bob_acc.insert(cm.0).map_err(|e| e.to_string())?;
@@ -450,12 +477,19 @@ impl PlaygroundSession {
                 spent: false,
             });
         }
+        self.last_action_ms = t0.elapsed().as_millis();
 
         self.xray_logs.insert(
             0,
             XRayLogEntry {
                 endpoint: "GET /v1/zk/sync (Oblivious Sync)".into(),
-                summary: format!("Bob synced {} commitments to epoch {} & decrypted {} stealth note(s)", sync.new_commitments.len(), self.bob_synced_epoch, count),
+                summary: format!(
+                    "Bob synced {} commitments to epoch {} & decrypted {} stealth note(s) in {}ms",
+                    sync.new_commitments.len(),
+                    self.bob_synced_epoch,
+                    count,
+                    self.last_action_ms
+                ),
                 opaque_payload: serde_json::json!({
                     "from_epoch": sync.from_epoch,
                     "to_epoch": sync.to_epoch,
@@ -504,7 +538,7 @@ impl PlaygroundSession {
         }
     }
 
-    pub fn state_view(&self) -> DemoStateResponse {
+    pub fn state_view(&self, session_id: &str) -> DemoStateResponse {
         let info = self.mint.info();
         let to_views = |notes: &[DemoStoredNote]| -> Vec<DemoNoteView> {
             notes
@@ -518,6 +552,7 @@ impl PlaygroundSession {
                 .collect()
         };
         DemoStateResponse {
+            session_id: session_id.to_string(),
             alice_balance: self.alice_notes.iter().filter(|n| !n.spent).map(|n| n.note.value).sum(),
             alice_notes: to_views(&self.alice_notes),
             bob_address: self.bob_stealth.address.encode(),
@@ -527,15 +562,66 @@ impl PlaygroundSession {
             bob_synced_epoch: self.bob_synced_epoch,
             mint_state: info.state,
             reserve_sats: self.reserve_sats,
+            last_action_ms: self.last_action_ms,
             xray_logs: self.xray_logs.iter().take(12).cloned().collect(),
             audit: self.audit(false),
         }
     }
 }
 
-pub type SharedPlayground = Arc<RwLock<PlaygroundSession>>;
+/// Multi-session store for online web deployment (isolates each visitor's browser tab).
+#[derive(Default)]
+pub struct PlaygroundStore {
+    sessions: HashMap<String, (PlaygroundSession, Instant)>,
+}
 
-pub fn playground_router(session: SharedPlayground) -> Router {
+impl PlaygroundStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn gc(&mut self) {
+        let now = Instant::now();
+        self.sessions
+            .retain(|_, (_, last_seen)| now.duration_since(*last_seen) < SESSION_TTL);
+        if self.sessions.len() >= MAX_SESSIONS {
+            if let Some(oldest_key) = self
+                .sessions
+                .iter()
+                .min_by_key(|(_, (_, ts))| *ts)
+                .map(|(k, _)| k.clone())
+            {
+                self.sessions.remove(&oldest_key);
+            }
+        }
+    }
+
+    pub fn with_session_mut<F, R>(&mut self, session_id: &str, f: F) -> R
+    where
+        F: FnOnce(&mut PlaygroundSession) -> R,
+    {
+        self.gc();
+        let entry = self
+            .sessions
+            .entry(session_id.to_string())
+            .or_insert_with(|| (PlaygroundSession::new(), Instant::now()));
+        entry.1 = Instant::now();
+        f(&mut entry.0)
+    }
+
+    pub fn reset_session(&mut self, session_id: &str) -> DemoStateResponse {
+        self.gc();
+        let s = PlaygroundSession::new();
+        let view = s.state_view(session_id);
+        self.sessions
+            .insert(session_id.to_string(), (s, Instant::now()));
+        view
+    }
+}
+
+pub type SharedPlayground = Arc<RwLock<PlaygroundStore>>;
+
+pub fn playground_router(store: SharedPlayground) -> Router {
     Router::new()
         .route("/", get(serve_html))
         .route("/v1/demo/state", get(demo_state))
@@ -546,21 +632,37 @@ pub fn playground_router(session: SharedPlayground) -> Router {
         .route("/v1/demo/double_spend", post(demo_double_spend))
         .route("/v1/demo/bob_sync", post(demo_bob_sync))
         .route("/v1/demo/audit", post(demo_audit))
-        .with_state(session)
+        .with_state(store)
+}
+
+fn extract_session_id(headers: &HeaderMap) -> String {
+    headers
+        .get("x-zashu-session")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.chars().take(64).collect::<String>())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| "default".to_string())
 }
 
 async fn serve_html() -> Html<&'static str> {
     Html(include_str!("playground.html"))
 }
 
-async fn demo_state(State(s): State<SharedPlayground>) -> Json<DemoStateResponse> {
-    Json(s.read().unwrap().state_view())
+async fn demo_state(
+    State(s): State<SharedPlayground>,
+    headers: HeaderMap,
+) -> Json<DemoStateResponse> {
+    let sid = extract_session_id(&headers);
+    let mut g = s.write().unwrap();
+    Json(g.with_session_mut(&sid, |sess| sess.state_view(&sid)))
 }
 
-async fn demo_reset(State(s): State<SharedPlayground>) -> Json<DemoStateResponse> {
-    let mut guard = s.write().unwrap();
-    *guard = PlaygroundSession::new();
-    Json(guard.state_view())
+async fn demo_reset(
+    State(s): State<SharedPlayground>,
+    headers: HeaderMap,
+) -> Json<DemoStateResponse> {
+    let sid = extract_session_id(&headers);
+    Json(s.write().unwrap().reset_session(&sid))
 }
 
 #[derive(Deserialize)]
@@ -580,63 +682,100 @@ fn json_err(msg: String) -> (StatusCode, Json<serde_json::Value>) {
 
 async fn demo_mint(
     State(s): State<SharedPlayground>,
+    headers: HeaderMap,
     Json(req): Json<AmountReq>,
 ) -> impl IntoResponse {
+    let sid = extract_session_id(&headers);
     let mut g = s.write().unwrap();
-    match g.mint_arbitrary(req.amount) {
-        Ok(()) => (StatusCode::OK, Json(serde_json::to_value(g.state_view()).unwrap())),
+    let res = g.with_session_mut(&sid, |sess| {
+        sess.mint_arbitrary(req.amount)?;
+        Ok::<_, String>(sess.state_view(&sid))
+    });
+    match res {
+        Ok(view) => (StatusCode::OK, Json(serde_json::to_value(view).unwrap())),
         Err(e) => json_err(e),
     }
 }
 
 async fn demo_shield_legacy(
     State(s): State<SharedPlayground>,
+    headers: HeaderMap,
     Json(req): Json<AmountReq>,
 ) -> impl IntoResponse {
+    let sid = extract_session_id(&headers);
     let mut g = s.write().unwrap();
-    match g.shield_legacy(req.amount) {
-        Ok(()) => (StatusCode::OK, Json(serde_json::to_value(g.state_view()).unwrap())),
+    let res = g.with_session_mut(&sid, |sess| {
+        sess.shield_legacy(req.amount)?;
+        Ok::<_, String>(sess.state_view(&sid))
+    });
+    match res {
+        Ok(view) => (StatusCode::OK, Json(serde_json::to_value(view).unwrap())),
         Err(e) => json_err(e),
     }
 }
 
 async fn demo_stealth_send(
     State(s): State<SharedPlayground>,
+    headers: HeaderMap,
     Json(req): Json<AmountReq>,
 ) -> impl IntoResponse {
+    let sid = extract_session_id(&headers);
     let mut g = s.write().unwrap();
-    match g.stealth_send(req.amount) {
-        Ok(()) => (StatusCode::OK, Json(serde_json::to_value(g.state_view()).unwrap())),
+    let res = g.with_session_mut(&sid, |sess| {
+        sess.stealth_send(req.amount)?;
+        Ok::<_, String>(sess.state_view(&sid))
+    });
+    match res {
+        Ok(view) => (StatusCode::OK, Json(serde_json::to_value(view).unwrap())),
         Err(e) => json_err(e),
     }
 }
 
-async fn demo_double_spend(State(s): State<SharedPlayground>) -> impl IntoResponse {
+async fn demo_double_spend(
+    State(s): State<SharedPlayground>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let sid = extract_session_id(&headers);
     let mut g = s.write().unwrap();
-    match g.try_double_spend() {
-        Ok(rejection) => (
+    let res = g.with_session_mut(&sid, |sess| {
+        let rejection = sess.try_double_spend()?;
+        Ok::<_, String>((rejection, sess.state_view(&sid)))
+    });
+    match res {
+        Ok((rejection, view)) => (
             StatusCode::OK,
             Json(serde_json::json!({
                 "rejected": true,
                 "reason": rejection,
-                "state": g.state_view(),
+                "state": view,
             })),
         ),
         Err(e) => json_err(e),
     }
 }
 
-async fn demo_bob_sync(State(s): State<SharedPlayground>) -> impl IntoResponse {
+async fn demo_bob_sync(
+    State(s): State<SharedPlayground>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let sid = extract_session_id(&headers);
     let mut g = s.write().unwrap();
-    match g.bob_sync() {
-        Ok(_) => (StatusCode::OK, Json(serde_json::to_value(g.state_view()).unwrap())),
+    let res = g.with_session_mut(&sid, |sess| {
+        sess.bob_sync()?;
+        Ok::<_, String>(sess.state_view(&sid))
+    });
+    match res {
+        Ok(view) => (StatusCode::OK, Json(serde_json::to_value(view).unwrap())),
         Err(e) => json_err(e),
     }
 }
 
 async fn demo_audit(
     State(s): State<SharedPlayground>,
+    headers: HeaderMap,
     Json(req): Json<AuditReq>,
 ) -> Json<DemoAuditView> {
-    Json(s.read().unwrap().audit(req.tamper_fractional))
+    let sid = extract_session_id(&headers);
+    let mut g = s.write().unwrap();
+    Json(g.with_session_mut(&sid, |sess| sess.audit(req.tamper_fractional)))
 }

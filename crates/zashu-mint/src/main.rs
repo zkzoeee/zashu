@@ -7,7 +7,7 @@ use bitcoin::ScriptBuf;
 use clap::Parser;
 use tokio::net::TcpListener;
 use tracing_subscriber::EnvFilter;
-use zashu_mint::playground::{playground_router, PlaygroundSession};
+use zashu_mint::playground::{playground_router, PlaygroundStore};
 use zashu_mint::{mint_router, MintReserveKey, SharedMintState, ZashuMint};
 
 #[derive(Parser)]
@@ -81,7 +81,7 @@ async fn main() -> Result<()> {
     );
 
     let shared: SharedMintState = Arc::new(RwLock::new(mint));
-    let playground = Arc::new(RwLock::new(PlaygroundSession::new()));
+    let playground = Arc::new(RwLock::new(PlaygroundStore::new()));
     let app = mint_router(shared).merge(playground_router(playground));
     tracing::info!("Web Playground available at http://{}/", cli.bind);
     let listener = TcpListener::bind(cli.bind).await?;
