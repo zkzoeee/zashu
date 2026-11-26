@@ -5,18 +5,19 @@ use halo2_proofs::plonk::{
     Advice, Circuit, Column, ConstraintSystem, Error, Instance, Selector,
 };
 use halo2_proofs::poly::Rotation;
-use zashu_acc::{InclusionWitness, NoteAccumulator};
+use zashu_acc::{InclusionWitness, NoteAccumulator, ACC_DEPTH};
 use zashu_core::field::{bytes_to_fp, fq_to_bytes, hash_bytes_to_fp, Fq};
 use zashu_core::pedersen::ValueCommitment;
 use zashu_core::types::{Note, NoteCommitment, Nullifier};
 
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, PcdEngine, SubcircuitId, DEFAULT_K};
-use crate::poseidon_chip::MerkleInclusionCircuit;
+use crate::poseidon_chip::{MerkleInclusionCircuit, PoseidonChipConfig};
 use crate::predicates::{verify_predicate, PredicateWitness};
 use crate::range_check::RangeCheck64Config;
 
 pub const MAX_IO: usize = 4;
+pub const MERKLE_K: u32 = 13;
 
 fn bytes_fp(b: &[u8; 32]) -> Fp {
     bytes_to_fp(b).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-b-fp", b))
@@ -33,6 +34,7 @@ pub struct ModeBConfig {
     pub q_mint: Selector,
     pub q_melt: Selector,
     pub range: RangeCheck64Config,
+    pub poseidon: PoseidonChipConfig,
 }
 
 impl ModeBConfig {
@@ -58,15 +60,32 @@ impl ModeBConfig {
             meta.advice_column(),
         ];
         let acc = meta.advice_column();
+        let p_state = [
+            meta.advice_column(),
+            meta.advice_column(),
+            meta.advice_column(),
+        ];
+        let p_rc = [
+            meta.fixed_column(),
+            meta.fixed_column(),
+            meta.fixed_column(),
+        ];
+        let p_bit = meta.advice_column();
         let constant = meta.fixed_column();
         let instance = meta.instance_column();
 
-        for c in vals.iter().chain(out_vals.iter()).chain(bits.iter()) {
+        for c in vals
+            .iter()
+            .chain(out_vals.iter())
+            .chain(bits.iter())
+            .chain(p_state.iter())
+        {
             meta.enable_equality(*c);
         }
         meta.enable_equality(sum_col);
         meta.enable_equality(pub_val);
         meta.enable_equality(acc);
+        meta.enable_equality(p_bit);
         meta.enable_constant(constant);
         meta.enable_equality(instance);
 
@@ -74,7 +93,6 @@ impl ModeBConfig {
         let q_mint = meta.selector();
         let q_melt = meta.selector();
 
-        // sum(vals) == sum(out_vals)
         meta.create_gate("zk_swap_balance", |meta| {
             let q = meta.query_selector(q_balance);
             let sum_in = vals
@@ -90,7 +108,6 @@ impl ModeBConfig {
             vec![q * (sum_in - sum_out)]
         });
 
-        // note_val == pub_val
         meta.create_gate("zk_mint_eq", |meta| {
             let q = meta.query_selector(q_mint);
             let v = meta.query_advice(vals[0], Rotation::cur());
@@ -98,7 +115,6 @@ impl ModeBConfig {
             vec![q * (v - pv)]
         });
 
-        // sum(vals) == pub_val + change_val
         meta.create_gate("zk_melt_balance", |meta| {
             let q = meta.query_selector(q_melt);
             let sum_in = vals
@@ -112,6 +128,8 @@ impl ModeBConfig {
         });
 
         let range = RangeCheck64Config::configure(meta, bits, acc);
+        let poseidon = PoseidonChipConfig::configure(meta, p_state, p_rc, p_bit);
+
         Self {
             vals,
             out_vals,
@@ -122,6 +140,7 @@ impl ModeBConfig {
             q_mint,
             q_melt,
             range,
+            poseidon,
         }
     }
 }
@@ -168,15 +187,37 @@ impl Circuit<Fp> for ZkMintCircuit {
     }
 }
 
-/// `ZkSwapCircuit`: proves `sum(in) == sum(out)`, 64-bit range checks on all `k <= 4` inputs and `m <= 4` outputs.
+/// Unified `ZkSwapCircuit` (`k = 13`):
+/// Proves in a single Halo 2 proof:
+/// 1. In-circuit 32-level Poseidon Merkle inclusion of private `primary_in_cm` in public `anchor_root_fp`.
+/// 2. 64-bit unsigned range checks on all `k <= 4` inputs and `m <= 4` outputs.
+/// 3. Value conservation `sum(in) == sum(out)`.
 /// Public instances: `[anchor_root_fp, nf_0..3, cm_out_0..3]`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ZkSwapCircuit {
     pub in_values: [Value<u64>; MAX_IO],
     pub out_values: [Value<u64>; MAX_IO],
     pub anchor_root_fp: Value<Fp>,
     pub nfs: [Value<Fp>; MAX_IO],
     pub cms: [Value<Fp>; MAX_IO],
+    pub primary_in_cm: Value<Fp>,
+    pub primary_siblings: [Value<Fp>; ACC_DEPTH],
+    pub primary_leaf_index: Value<u64>,
+}
+
+impl Default for ZkSwapCircuit {
+    fn default() -> Self {
+        Self {
+            in_values: [Value::unknown(); MAX_IO],
+            out_values: [Value::unknown(); MAX_IO],
+            anchor_root_fp: Value::unknown(),
+            nfs: [Value::unknown(); MAX_IO],
+            cms: [Value::unknown(); MAX_IO],
+            primary_in_cm: Value::unknown(),
+            primary_siblings: [Value::unknown(); ACC_DEPTH],
+            primary_leaf_index: Value::unknown(),
+        }
+    }
 }
 
 impl Circuit<Fp> for ZkSwapCircuit {
@@ -209,7 +250,7 @@ impl Circuit<Fp> for ZkSwapCircuit {
             )?);
         }
 
-        let (anc_c, nf_cs, cm_cs) = layouter.assign_region(
+        let (anc_c, prim_cm_c, nf_cs, cm_cs) = layouter.assign_region(
             || "zk_swap",
             |mut region| {
                 cfg.q_balance.enable(&mut region, 0)?;
@@ -232,14 +273,24 @@ impl Circuit<Fp> for ZkSwapCircuit {
                 }
 
                 let anc_c = region.assign_advice(|| "anchor", cfg.pub_val, 0, || self.anchor_root_fp)?;
+                let prim_cm_c = region.assign_advice(|| "prim_in_cm", cfg.sum_col, 0, || self.primary_in_cm)?;
                 let mut nf_cs = Vec::with_capacity(MAX_IO);
                 let mut cm_cs = Vec::with_capacity(MAX_IO);
                 for i in 0..MAX_IO {
                     nf_cs.push(region.assign_advice(|| format!("nf_{i}"), cfg.vals[i], 1, || self.nfs[i])?);
                     cm_cs.push(region.assign_advice(|| format!("cm_{i}"), cfg.out_vals[i], 1, || self.cms[i])?);
                 }
-                Ok((anc_c, nf_cs, cm_cs))
+                Ok((anc_c, prim_cm_c, nf_cs, cm_cs))
             },
+        )?;
+
+        // In-circuit 32-level Poseidon Merkle inclusion of primary input note
+        cfg.poseidon.verify_merkle_inclusion(
+            layouter.namespace(|| "zk_swap_merkle"),
+            prim_cm_c,
+            &self.primary_siblings,
+            self.primary_leaf_index,
+            &anc_c,
         )?;
 
         layouter.constrain_instance(anc_c.cell(), cfg.instance, 0)?;
@@ -251,9 +302,10 @@ impl Circuit<Fp> for ZkSwapCircuit {
     }
 }
 
-/// `ZkMeltCircuit`: proves `sum(in) == public_melt_amount + change_val`, 64-bit range checks.
+/// Unified `ZkMeltCircuit` (`k = 13`):
+/// Proves in-circuit 32-level Poseidon Merkle inclusion + `sum(in) == public_melt_amount + change_val` + 64-bit range checks.
 /// Public instances: `[anchor_root_fp, public_melt_amount, change_cm_fp, nf_0..3]`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ZkMeltCircuit {
     pub in_values: [Value<u64>; MAX_IO],
     pub public_melt_amount: Value<u64>,
@@ -261,6 +313,25 @@ pub struct ZkMeltCircuit {
     pub anchor_root_fp: Value<Fp>,
     pub change_cm_fp: Value<Fp>,
     pub nfs: [Value<Fp>; MAX_IO],
+    pub primary_in_cm: Value<Fp>,
+    pub primary_siblings: [Value<Fp>; ACC_DEPTH],
+    pub primary_leaf_index: Value<u64>,
+}
+
+impl Default for ZkMeltCircuit {
+    fn default() -> Self {
+        Self {
+            in_values: [Value::unknown(); MAX_IO],
+            public_melt_amount: Value::unknown(),
+            change_value: Value::unknown(),
+            anchor_root_fp: Value::unknown(),
+            change_cm_fp: Value::unknown(),
+            nfs: [Value::unknown(); MAX_IO],
+            primary_in_cm: Value::unknown(),
+            primary_siblings: [Value::unknown(); ACC_DEPTH],
+            primary_leaf_index: Value::unknown(),
+        }
+    }
 }
 
 impl Circuit<Fp> for ZkMeltCircuit {
@@ -298,7 +369,7 @@ impl Circuit<Fp> for ZkMeltCircuit {
             None,
         )?;
 
-        let (anc_c, pv_c, ch_cm_c, nf_cs) = layouter.assign_region(
+        let (anc_c, prim_cm_c, pv_c, ch_cm_c, nf_cs) = layouter.assign_region(
             || "zk_melt",
             |mut region| {
                 cfg.q_melt.enable(&mut region, 0)?;
@@ -318,12 +389,21 @@ impl Circuit<Fp> for ZkMeltCircuit {
 
                 let anc_c = region.assign_advice(|| "anchor", cfg.pub_val, 1, || self.anchor_root_fp)?;
                 let ch_cm_c = region.assign_advice(|| "ch_cm", cfg.sum_col, 1, || self.change_cm_fp)?;
+                let prim_cm_c = region.assign_advice(|| "prim_in_cm", cfg.out_vals[1], 1, || self.primary_in_cm)?;
                 let mut nf_cs = Vec::with_capacity(MAX_IO);
                 for i in 0..MAX_IO {
                     nf_cs.push(region.assign_advice(|| format!("nf_{i}"), cfg.vals[i], 1, || self.nfs[i])?);
                 }
-                Ok((anc_c, pv_c, ch_cm_c, nf_cs))
+                Ok((anc_c, prim_cm_c, pv_c, ch_cm_c, nf_cs))
             },
+        )?;
+
+        cfg.poseidon.verify_merkle_inclusion(
+            layouter.namespace(|| "zk_melt_merkle"),
+            prim_cm_c,
+            &self.primary_siblings,
+            self.primary_leaf_index,
+            &anc_c,
         )?;
 
         layouter.constrain_instance(anc_c.cell(), cfg.instance, 0)?;
@@ -399,6 +479,17 @@ pub fn verify_zk_shield(proof: &FoldedProof, bdhke_sum: u64, cm: &NoteCommitment
     verify_zk_mint(&inner, bdhke_sum, cm, cv)
 }
 
+fn siblings_to_values(w: &InclusionWitness) -> Result<[Value<Fp>; ACC_DEPTH]> {
+    if w.siblings.len() != ACC_DEPTH {
+        return Err(CircuitError::InvalidWitness("invalid sibling length".into()));
+    }
+    let mut out = [Value::unknown(); ACC_DEPTH];
+    for (i, s) in w.siblings.iter().enumerate() {
+        out[i] = Value::known(bytes_fp(s));
+    }
+    Ok(out)
+}
+
 pub fn prove_zk_swap(
     anchor_root: &[u8; 32],
     inputs: &[InputNoteWitness<'_>],
@@ -418,8 +509,12 @@ pub fn prove_zk_swap(
     let mut cm_fps = [Fp::ZERO; MAX_IO];
 
     let mut sum_in: u128 = 0;
+    let mut primary_cm_fp = Fp::ZERO;
     for (i, inp) in inputs.iter().enumerate() {
         let cm = inp.note.commitment();
+        if i == 0 {
+            primary_cm_fp = bytes_fp(&cm.0);
+        }
         if !NoteAccumulator::verify_inclusion(anchor_root, &cm.0, inp.witness) {
             return Err(CircuitError::InvalidWitness("input note not in anchor_root".into()));
         }
@@ -453,6 +548,9 @@ pub fn prove_zk_swap(
         anchor_root_fp: Value::known(anc_fp),
         nfs: nf_fps.map(Value::known),
         cms: cm_fps.map(Value::known),
+        primary_in_cm: Value::known(primary_cm_fp),
+        primary_siblings: siblings_to_values(inputs[0].witness)?,
+        primary_leaf_index: Value::known(inputs[0].witness.leaf_index),
     };
 
     let mut instances = Vec::with_capacity(1 + 2 * MAX_IO);
@@ -462,7 +560,7 @@ pub fn prove_zk_swap(
 
     let proof = PcdEngine::global().prove(
         SubcircuitId::ZkSwap,
-        DEFAULT_K,
+        MERKLE_K,
         &ZkSwapCircuit::default(),
         circuit,
         &instances,
@@ -511,9 +609,13 @@ pub fn prove_zk_melt(
     let mut nfs = Vec::with_capacity(inputs.len());
     let mut nf_fps = [Fp::ZERO; MAX_IO];
     let mut sum_in: u128 = 0;
+    let mut primary_cm_fp = Fp::ZERO;
 
     for (i, inp) in inputs.iter().enumerate() {
         let cm = inp.note.commitment();
+        if i == 0 {
+            primary_cm_fp = bytes_fp(&cm.0);
+        }
         if !NoteAccumulator::verify_inclusion(anchor_root, &cm.0, inp.witness) {
             return Err(CircuitError::InvalidWitness("melt input note not in anchor_root".into()));
         }
@@ -547,6 +649,9 @@ pub fn prove_zk_melt(
         anchor_root_fp: Value::known(anc_fp),
         change_cm_fp: Value::known(ch_cm_fp),
         nfs: nf_fps.map(Value::known),
+        primary_in_cm: Value::known(primary_cm_fp),
+        primary_siblings: siblings_to_values(inputs[0].witness)?,
+        primary_leaf_index: Value::known(inputs[0].witness.leaf_index),
     };
 
     let mut instances = Vec::with_capacity(3 + MAX_IO);
@@ -557,7 +662,7 @@ pub fn prove_zk_melt(
 
     let proof = PcdEngine::global().prove(
         SubcircuitId::ZkMelt,
-        DEFAULT_K,
+        MERKLE_K,
         &ZkMeltCircuit::default(),
         circuit,
         &instances,
@@ -612,36 +717,24 @@ pub fn verify_zk_unshield(
     verify_zk_melt(&inner, anchor_root, unshield_amount, change_cm, nullifiers)
 }
 
-// Keep `fq_to_bytes` available for callers using blinding arithmetic
 pub fn balance_blinding(in_blinds: &[Fq], out_blinds_except_last: &[Fq]) -> Fq {
     let sum_in: Fq = in_blinds.iter().copied().sum();
     let sum_out: Fq = out_blinds_except_last.iter().copied().sum();
     sum_in - sum_out
 }
 
-const _: fn(&Fq) -> [u8; 32] = fq_to_bytes;
-
-pub const MERKLE_K: u32 = 13;
-
-/// Generates a Halo 2 Pasta/IPA proof of 32-level Poseidon Merkle inclusion (`k = 13`).
+/// Standalone Merkle inclusion proof helper (`k = 13`).
 pub fn prove_merkle_inclusion(
     leaf: &[u8; 32],
     root: &[u8; 32],
     witness: &InclusionWitness,
 ) -> Result<FoldedProof> {
-    if witness.siblings.len() != zashu_acc::ACC_DEPTH {
-        return Err(CircuitError::InvalidWitness("bad sibling length".into()));
-    }
     let leaf_fp = bytes_fp(leaf);
     let root_fp = bytes_fp(root);
-    let mut sibs = [Value::unknown(); zashu_acc::ACC_DEPTH];
-    for (i, s) in witness.siblings.iter().enumerate() {
-        sibs[i] = Value::known(bytes_fp(s));
-    }
     let circuit = MerkleInclusionCircuit {
         leaf: Value::known(leaf_fp),
         root: Value::known(root_fp),
-        siblings: sibs,
+        siblings: siblings_to_values(witness)?,
         leaf_index: Value::known(witness.leaf_index),
     };
     PcdEngine::global().prove(
@@ -654,7 +747,6 @@ pub fn prove_merkle_inclusion(
     )
 }
 
-/// Verifies a Halo 2 Pasta/IPA 32-level Poseidon Merkle inclusion proof.
 pub fn verify_merkle_inclusion(
     proof: &FoldedProof,
     leaf: &[u8; 32],
@@ -673,3 +765,5 @@ pub fn verify_merkle_inclusion(
         proof,
     )
 }
+
+const _: fn(&Fq) -> [u8; 32] = fq_to_bytes;
