@@ -14,6 +14,47 @@ use crate::error::{CircuitError, Result};
 use crate::pcd::{fold_tree, FoldedProof, PcdEngine, SubcircuitId, DEFAULT_K};
 use crate::range_check::RangeCheck64Config;
 
+#[cfg(feature = "ragu")]
+pub mod ragu_backend;
+
+/// Environment variable read by [`FoldBackend::from_env`]: `halo2` (default) or `ragu`.
+pub const FOLD_BACKEND_ENV: &str = "ZASHU_FOLD_BACKEND";
+
+/// Proof system used to fold Mode A step proofs into the `NUTZ-1` proof.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FoldBackend {
+    /// Steps are verified natively by the folder; the folded Halo 2 proof only
+    /// exposes the endpoints as public inputs.
+    #[default]
+    Halo2,
+    /// Recursive Ragu PCD: the folded proof attests every step and the chaining
+    /// between them. Requires the `ragu` cargo feature.
+    Ragu,
+}
+
+impl FoldBackend {
+    /// Reads [`FOLD_BACKEND_ENV`]. Unset or empty selects Halo 2.
+    pub fn from_env() -> Result<Self> {
+        match std::env::var(FOLD_BACKEND_ENV) {
+            Err(_) => Ok(Self::Halo2),
+            Ok(v) => match v.trim().to_ascii_lowercase().as_str() {
+                "" | "halo2" => Ok(Self::Halo2),
+                "ragu" => Ok(Self::Ragu),
+                other => Err(CircuitError::InvalidWitness(format!(
+                    "{FOLD_BACKEND_ENV}={other:?}: expected \"halo2\" or \"ragu\""
+                ))),
+            },
+        }
+    }
+}
+
+#[cfg(not(feature = "ragu"))]
+fn ragu_unavailable() -> CircuitError {
+    CircuitError::VerificationFailed(
+        "Ragu fold backend not compiled in; rebuild with `--features ragu`".into(),
+    )
+}
+
 fn state_hash_to_fp(hash: &[u8; 32]) -> Fp {
     bytes_to_fp(hash).unwrap_or_else(|_| hash_bytes_to_fp(b"zashu-state-fp", hash))
 }
@@ -481,14 +522,47 @@ pub fn verify_mode_a_step(proof: &FoldedProof) -> Result<()> {
         SubcircuitId::SwapStep => eng.verify(SubcircuitId::SwapStep, &SwapStepCircuit::default(), proof),
         SubcircuitId::MeltStep => eng.verify(SubcircuitId::MeltStep, &MeltStepCircuit::default(), proof),
         SubcircuitId::FoldBatch => eng.verify(SubcircuitId::FoldBatch, &FoldBatchCircuit::default(), proof),
+        #[cfg(feature = "ragu")]
+        SubcircuitId::RaguFold => ragu_backend::verify(proof),
+        #[cfg(not(feature = "ragu"))]
+        SubcircuitId::RaguFold => Err(ragu_unavailable()),
         other => Err(CircuitError::VerificationFailed(format!(
             "unexpected subcircuit in Mode A: {other:?}"
         ))),
     }
 }
 
-/// Folds a contiguous sequence of Mode A step proofs into a single `FoldBatch` proof.
+/// Folds a contiguous sequence of Mode A step proofs into a single proof, using
+/// the backend selected by [`FoldBackend::from_env`] (Halo 2 unless overridden).
 pub fn fold_mode_a_batch(
+    start_state: &MintState,
+    end_state: &MintState,
+    step_proofs: &[FoldedProof],
+) -> Result<FoldedProof> {
+    fold_mode_a_batch_with(FoldBackend::from_env()?, start_state, end_state, step_proofs)
+}
+
+/// Folds a contiguous sequence of Mode A step proofs with an explicit backend.
+pub fn fold_mode_a_batch_with(
+    backend: FoldBackend,
+    start_state: &MintState,
+    end_state: &MintState,
+    step_proofs: &[FoldedProof],
+) -> Result<FoldedProof> {
+    match backend {
+        FoldBackend::Halo2 => fold_mode_a_batch_halo2(start_state, end_state, step_proofs),
+        #[cfg(feature = "ragu")]
+        FoldBackend::Ragu => ragu_backend::fold(
+            &zashu_core::field::fp_to_bytes(&state_hash_to_fp(&start_state.state_hash())),
+            &zashu_core::field::fp_to_bytes(&state_hash_to_fp(&end_state.state_hash())),
+            step_proofs,
+        ),
+        #[cfg(not(feature = "ragu"))]
+        FoldBackend::Ragu => Err(ragu_unavailable()),
+    }
+}
+
+fn fold_mode_a_batch_halo2(
     start_state: &MintState,
     end_state: &MintState,
     step_proofs: &[FoldedProof],

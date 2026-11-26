@@ -4,3 +4,4 @@
 zashu-wallet.json
 /video/node_modules
 /video/out
+/spikes/*/target

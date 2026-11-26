@@ -28,6 +28,8 @@ pub enum SubcircuitId {
     SwapStep,
     MeltStep,
     FoldBatch,
+    /// Mode A fold produced by the Ragu PCD backend (`ragu` feature).
+    RaguFold,
     ZkMint,
     ZkSwap,
     ZkMelt,

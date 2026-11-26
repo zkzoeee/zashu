@@ -1,0 +1,17 @@
+[package]
+name = "zashu-ragu-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# Standalone on purpose: Ragu is unreleased (crates.io only has 0.0.0
+# placeholders) and unaudited, so this spike keeps its git dependency and
+# lockfile out of the main zashu workspace.
+[workspace]
+
+[dependencies]
+ragu = { git = "https://github.com/tachyon-zcash/ragu", rev = "a812865ff7aa8c2d546c7019f0a822ea8c1aa5a9", features = ["baked"] }
+rand = { version = "0.10", default-features = false, features = ["std_rng"] }
+
+[profile.release]
+opt-level = 3

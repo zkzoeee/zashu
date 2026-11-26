@@ -92,6 +92,20 @@ crates/
 * **Benchmarks:** [`BENCHMARKS.md`](./BENCHMARKS.md) (1 ms verification, ~16 KB folded solvency proof, ~49.6% accumulator pruning over 10k spends)
 * **Design Roadmap:** [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md)
 
+## Experimental: Ragu PCD fold backend
+
+The `NUTZ-1` fold defaults to Halo 2, where the folder verifies step proofs natively and the folded proof only exposes the endpoints. An opt-in backend re-proves the steps and folds them with upstream [Ragu](https://github.com/tachyon-zcash/ragu) recursive PCD, so the final proof itself attests every step and the chaining between them.
+
+```bash
+cargo build --release -p zashu-mint --features ragu
+ZASHU_FOLD_BACKEND=ragu ./target/release/zashu-mint
+```
+
+* Ragu is unreleased and unaudited upstream; it is pinned to a git commit and needs Rust 1.97.1+. Do not use it in production.
+* Auditors need the `ragu` feature too (`-p zashu-auditor --features ragu`) to verify these bundles.
+* Folding costs roughly 0.9 s per step and verification about 65 ms, against about 1 ms for the Halo 2 fold. The proof is about 6 KB.
+* Code: `crates/zashu-circuits/src/mode_a/ragu_backend.rs`; standalone spike: `spikes/ragu-pcd`.
+
 ## License
 
 [MIT](./LICENSE)
