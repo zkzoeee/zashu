@@ -1,0 +1,30 @@
+[package]
+name = "zashu-mint"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+base64.workspace = true
+bitcoin.workspace = true
+hex.workspace = true
+pasta_curves.workspace = true
+rand.workspace = true
+secp256k1.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+zashu-acc.workspace = true
+zashu-circuits.workspace = true
+zashu-core.workspace = true
+
+[dev-dependencies]
+ff.workspace = true
+group.workspace = true
+zashu-auditor.workspace = true

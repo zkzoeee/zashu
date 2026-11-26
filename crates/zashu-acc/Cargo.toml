@@ -1,0 +1,12 @@
+[package]
+name = "zashu-acc"
+edition.workspace = true
+version.workspace = true
+license.workspace = true
+
+[dependencies]
+ff.workspace = true
+pasta_curves.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+zashu-core.workspace = true
