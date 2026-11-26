@@ -19,7 +19,8 @@ Standard Cashu requires power-of-2 denominations (`1, 2, 4, 8, ...`) and exposes
 * **Note Commitment:**
   $$\text{cm} = \text{Poseidon}(\text{DOMAIN\_NOTE}, v, \text{pk\_owner}, \text{predicate\_id}, \text{predicate\_params\_hash}, \rho, r)$$
 * **Nullifier:**
-  $$\text{nf} = \text{Poseidon}(\text{DOMAIN\_NF}, \text{sk\_auth}, \rho)$$
+  $$\text{nf} = \text{Poseidon}(\text{DOMAIN\_NF}, r, \rho)$$
+  (one nullifier per note, independent of the spending key or predicate branch; see `NUTZ-4` §2.2)
 * **Range Constraint:** Every note value $v$ MUST be constrained to $0 \le v < 2^{64}$ inside every mint/swap/melt/shield circuit.
 
 ---

@@ -4,6 +4,10 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[features]
+# Ragu PCD backend for shielded transaction proofs; see zashu-circuits.
+ragu = ["zashu-circuits/ragu"]
+
 [dependencies]
 anyhow.workspace = true
 base64.workspace = true
