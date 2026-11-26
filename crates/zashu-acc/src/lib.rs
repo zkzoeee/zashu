@@ -78,6 +78,21 @@ impl NoteAccumulator {
         self.next_index
     }
 
+    /// The node at `(level, idx)`. Interior nodes are a cache: one that was
+    /// pruned is recomputed from the level below, down to the leaves, which
+    /// are never pruned.
+    fn node(&self, level: usize, idx: u64) -> [u8; 32] {
+        if let Some(n) = self.nodes.get(&(level, idx)) {
+            return *n;
+        }
+        // No leaf under this node yet (or a missing leaf): it is empty.
+        let first_leaf = idx.checked_shl(level as u32).unwrap_or(u64::MAX);
+        if level == 0 || first_leaf >= self.next_index {
+            return self.empty[level];
+        }
+        hash_acc_node(&self.node(level - 1, idx * 2), &self.node(level - 1, idx * 2 + 1))
+    }
+
     pub fn is_empty(&self) -> bool {
         self.next_index == 0
     }
@@ -106,10 +121,7 @@ impl NoteAccumulator {
 
         for level in 0..ACC_DEPTH {
             let sibling_idx = cur_idx ^ 1;
-            let sibling = *self
-                .nodes
-                .get(&(level, sibling_idx))
-                .unwrap_or(&self.empty[level]);
+            let sibling = self.node(level, sibling_idx);
             let parent = if cur_idx % 2 == 0 {
                 hash_acc_node(&cur_hash, &sibling)
             } else {
@@ -136,10 +148,7 @@ impl NoteAccumulator {
         let mut cur_idx = leaf_index;
         for level in 0..ACC_DEPTH {
             let sibling_idx = cur_idx ^ 1;
-            let sibling = *self
-                .nodes
-                .get(&(level, sibling_idx))
-                .unwrap_or(&self.empty[level]);
+            let sibling = self.node(level, sibling_idx);
             siblings.push(sibling);
             cur_idx >>= 1;
         }
@@ -330,11 +339,7 @@ impl NullifierAccumulator {
         let mut cur_hash = leaf_hash;
         for level in 0..ACC_DEPTH {
             let sibling_idx = cur_idx ^ 1;
-            let sibling = *self
-                .tree
-                .nodes
-                .get(&(level, sibling_idx))
-                .unwrap_or(&self.tree.empty[level]);
+            let sibling = self.tree.node(level, sibling_idx);
             let parent = if cur_idx % 2 == 0 {
                 hash_acc_node(&cur_hash, &sibling)
             } else {
@@ -365,7 +370,9 @@ impl NullifierAccumulator {
         let (pruned_epoch, _, _) = self.epoch_checkpoints[cutoff - 1];
         self.pruned_before_epoch = pruned_epoch;
 
-        // Compact internal Merkle nodes below level 8 for older indices while keeping root valid
+        // Drop cached interior nodes below level 8. Leaves and upper levels
+        // stay; a dropped node is recomputed from its leaves when next needed
+        // (at most 2^7 leaf hashes), so roots and witnesses remain correct.
         let before = self.tree.nodes.len();
         self.tree.nodes.retain(|(level, _), _| *level >= 8 || *level == 0);
         before.saturating_sub(self.tree.nodes.len())
@@ -443,5 +450,36 @@ mod tests {
         let pruned = nf_acc.prune_before_epoch(2);
         assert!(pruned > 0);
         assert!(nf_acc.node_count() < nodes_before);
+    }
+
+    #[test]
+    fn inserts_and_witnesses_stay_correct_after_pruning() {
+        let fill = |acc: &mut NullifierAccumulator, prune: bool| {
+            for e in 0..12u8 {
+                for i in 0..20u8 {
+                    let mut nf = [0u8; 32];
+                    nf[0] = e + 1;
+                    nf[1] = i + 1;
+                    let t = acc.insert(nf).unwrap();
+                    assert!(NullifierAccumulator::verify_non_membership(&t.pre_root, &nf, &t.non_membership));
+                }
+                acc.seal_epoch();
+                if prune {
+                    acc.prune_before_epoch(2);
+                }
+            }
+        };
+        let (mut pruned, mut full) = (NullifierAccumulator::new(), NullifierAccumulator::new());
+        fill(&mut pruned, true);
+        fill(&mut full, false);
+        // Pruning is only a cache eviction: same root, fewer stored nodes.
+        assert_eq!(pruned.root(), full.root());
+        assert!(pruned.node_count() < full.node_count());
+
+        let mut probe = [0u8; 32];
+        probe[0] = 5;
+        probe[1] = 200;
+        let w = pruned.prove_non_membership(&probe).unwrap();
+        assert!(NullifierAccumulator::verify_non_membership(&pruned.root(), &probe, &w));
     }
 }
