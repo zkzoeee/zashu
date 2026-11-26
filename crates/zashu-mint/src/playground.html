@@ -4,6 +4,10 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Zashu — Interactive Wallet, Mint & Auditor Playground</title>
+  <!-- Reggae One: Japanese display face for the wordmark & headings (falls back to a serif offline) -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Reggae+One&display=swap" rel="stylesheet" />
   <style>
     :root {
       --bg: #0a0d14;
@@ -18,6 +22,10 @@
       --amber: #f7931a;
       --green: #2ea043;
       --red: #f85149;
+      --violet-hi: #c4b5fd;
+      --shu: #e5484d; /* 朱 vermilion for hanko seals */
+      --jp: "Reggae One", "Hiragino Mincho ProN", "Yu Mincho", serif;
+      --seigaiha: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='40' height='20' viewBox='0 0 40 20'%3E%3Cdefs%3E%3Cg id='s'%3E%3Ccircle r='20' fill='%230a0d14' stroke='%238b5cf6' stroke-opacity='.55'/%3E%3Ccircle r='15' fill='none' stroke='%238b5cf6' stroke-opacity='.35'/%3E%3Ccircle r='10' fill='none' stroke='%238b5cf6' stroke-opacity='.35'/%3E%3Ccircle r='5' fill='none' stroke='%238b5cf6' stroke-opacity='.35'/%3E%3C/g%3E%3C/defs%3E%3Cuse href='%23s' x='20' y='0'/%3E%3Cuse href='%23s' x='0' y='10'/%3E%3Cuse href='%23s' x='40' y='10'/%3E%3Cuse href='%23s' x='20' y='20'/%3E%3C/svg%3E");
     }
     * { box-sizing: border-box; }
     body {
@@ -282,16 +290,71 @@
       max-width: 400px;
       box-shadow: 0 6px 24px rgba(0,0,0,0.5);
     }
+
+    /* ───────────── Japanese theme ───────────── */
+    header { position: relative; isolation: isolate; }
+    header::before {
+      content: "";
+      position: absolute;
+      inset: -20px -20px 0;
+      background-image: var(--seigaiha);
+      background-size: 40px 20px;
+      opacity: 0.18;
+      z-index: -1;
+      pointer-events: none;
+      -webkit-mask-image: linear-gradient(180deg, #000, transparent);
+      mask-image: linear-gradient(180deg, #000, transparent);
+    }
+    .wordmark { font-family: var(--jp); font-weight: 400; color: var(--violet-hi); letter-spacing: 0.01em; }
+    h1 { font-weight: 700; }
+    h1 .wordmark { font-size: 1.7rem; margin-right: 4px; }
+    h1 .kana { font-family: var(--jp); font-weight: 400; font-size: 0.8rem; color: var(--muted); letter-spacing: 0.12em; margin-right: 6px; }
+    .mascot-wrap { border: none; border-radius: 0; overflow: visible; box-shadow: none; }
+    .mascot-wrap img { object-fit: contain; filter: drop-shadow(0 0 10px rgba(139,92,246,0.5)); }
+    .mascot-wrap.proving { animation: pulse-png 1s infinite alternate; }
+    @keyframes pulse-png {
+      from { transform: scale(1) translateY(0); }
+      to { transform: scale(1.06) translateY(-3px); }
+    }
+    .box-head h2, .wallet-title { font-family: var(--jp); font-weight: 400; letter-spacing: 0.01em; }
+
+    /* kanji numerals on the story steps */
+    .step { display: flex; align-items: center; gap: 10px; }
+    .step .kanji-num {
+      flex: 0 0 auto;
+      font-family: var(--jp);
+      font-size: 1.75rem;
+      line-height: 1;
+      color: var(--violet);
+      opacity: 0.45;
+    }
+    .step.active .kanji-num { color: var(--violet-hi); opacity: 0.9; }
+    .step.done .kanji-num { color: var(--green); opacity: 0.8; }
+
+    .section-label b { font-family: var(--jp); font-weight: 400; font-size: 0.95rem; color: var(--amber); letter-spacing: 0.08em; margin-right: 8px; text-transform: none; }
+
+    /* SOLVENT / FAILED as a hanko seal */
+    .badge.hanko {
+      font-family: var(--jp);
+      font-weight: 400;
+      font-size: 0.9rem;
+      letter-spacing: 0.08em;
+      border-radius: 6px;
+      border-style: double;
+      border-width: 4px;
+      padding: 2px 10px;
+      transform: rotate(-4deg);
+    }
   </style>
 </head>
 <body>
   <header>
     <div class="brand">
       <div class="mascot-wrap" id="mascot-wrap" title="Zashi — The Stealth Cashew Ninja">
-        <img src="/assets/zashi-mascot.jpg" alt="Zashi" />
+        <img src="/assets/zashi-mascot.png" alt="Zashi" />
       </div>
       <div>
-        <h1><span>Zashu</span> — ZK-Cashu Glass-Box Playground</h1>
+        <h1><span class="wordmark">Zashu</span><span class="kana" lang="ja">ザシュ</span> — ZK-Cashu Glass-Box Playground</h1>
         <div class="subtitle">Two Wallets · One Blindfolded Mint · Independent <code>NUTZ-1</code> Auditor · <a href="/" style="color:var(--violet);text-decoration:none;">← Home</a></div>
       </div>
     </div>
@@ -304,15 +367,15 @@
 
   <!-- Guided 5-Step Story Mode -->
   <div class="stepper" id="stepper">
-    <div class="step active" id="st-1"><b>1. Mint Arbitrary Note</b>Create 137 sats in 1 single note</div>
-    <div class="step" id="st-2"><b>2. Shield Legacy Cashu</b>Merge 128+8+1 tokens (0 LN fee)</div>
-    <div class="step" id="st-3"><b>3. Stealth Send (Offline)</b>Unified k=13 swap to Bob's zsp1</div>
-    <div class="step" id="st-4"><b>4. Try Double-Spend</b>Replay nullifier &amp; watch mint block</div>
-    <div class="step" id="st-5"><b>5. Bob Syncs &amp; Audit</b>Oblivious sync + NUTZ-1 verification</div>
+    <div class="step active" id="st-1"><span class="kanji-num" lang="ja" aria-hidden="true">一</span><div><b>1. Mint Arbitrary Note</b>Create 137 sats in 1 single note</div></div>
+    <div class="step" id="st-2"><span class="kanji-num" lang="ja" aria-hidden="true">二</span><div><b>2. Shield Legacy Cashu</b>Merge 128+8+1 tokens (0 LN fee)</div></div>
+    <div class="step" id="st-3"><span class="kanji-num" lang="ja" aria-hidden="true">三</span><div><b>3. Stealth Send (Offline)</b>Unified k=13 swap to Bob's zsp1</div></div>
+    <div class="step" id="st-4"><span class="kanji-num" lang="ja" aria-hidden="true">四</span><div><b>4. Try Double-Spend</b>Replay nullifier &amp; watch mint block</div></div>
+    <div class="step" id="st-5"><span class="kanji-num" lang="ja" aria-hidden="true">五</span><div><b>5. Bob Syncs &amp; Audit</b>Oblivious sync + NUTZ-1 verification</div></div>
   </div>
 
   <!-- Row 1: Two Realistic Wallets -->
-  <div class="section-label">User Wallets (Client-Side Keys &amp; ZK Proving)</div>
+  <div class="section-label"><b lang="ja">財布</b>User Wallets (Client-Side Keys &amp; ZK Proving)</div>
   <div class="wallets-grid">
     <!-- Alice's Wallet -->
     <section class="wallet-box">
@@ -366,7 +429,7 @@
   </div>
 
   <!-- Row 2: The Mint Box + Independent Auditor Box -->
-  <div class="section-label">Mint Infrastructure &amp; Public Verification</div>
+  <div class="section-label"><b lang="ja">造幣所 · 監査</b>Mint Infrastructure &amp; Public Verification</div>
   <div class="infra-grid">
     <!-- Mint Box -->
     <section class="mint-box">
@@ -387,7 +450,7 @@
     <section class="auditor-box" id="auditor-box">
       <div class="box-head">
         <h2>NUTZ-1 Solvency Auditor</h2>
-        <span class="badge ok" id="audit-badge">SOLVENT</span>
+        <span class="badge ok hanko" id="audit-badge">SOLVENT</span>
       </div>
       <div class="mono">Independent watchdog verifying <code>Proof of Liabilities ≤ L1 Reserves</code></div>
       <div class="item" id="audit-summary">Verifying...</div>
@@ -488,7 +551,7 @@
       box.className = `auditor-box ${a.solvent ? '' : 'failed'}`;
       const badge = document.getElementById('audit-badge');
       badge.textContent = a.solvent ? 'SOLVENT' : 'FAILED';
-      badge.className = `badge ${a.solvent ? 'ok' : 'fail'}`;
+      badge.className = `badge hanko ${a.solvent ? 'ok' : 'fail'}`;
       document.getElementById('audit-summary').textContent =
         `Epoch ${a.epoch} | Liabilities: ${a.total_liabilities.toLocaleString()} sats <= Reserves: ${a.total_reserves.toLocaleString()} sats`;
       document.getElementById('audit-detail').textContent = a.solvent

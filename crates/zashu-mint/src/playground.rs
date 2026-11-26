@@ -692,10 +692,15 @@ pub fn playground_router(store: SharedPlayground) -> Router {
     Router::new()
         .route("/", get(serve_landing))
         .route("/playground", get(serve_html))
-        .route("/assets/zashi-mascot.jpg", get(serve_mascot))
-        .route("/assets/zashi-var-streetwear.jpg", get(serve_var_streetwear))
-        .route("/assets/zashi-var-cyber.jpg", get(serve_var_cyber))
-        .route("/assets/zashi-var-monk.jpg", get(serve_var_monk))
+        .route("/assets/zashi-mascot.png", get(serve_mascot))
+        .route("/assets/zashi-var-streetwear.png", get(serve_var_streetwear))
+        .route("/assets/zashi-var-cyber.png", get(serve_var_cyber))
+        .route("/assets/zashi-var-monk.png", get(serve_var_monk))
+        .route("/assets/zashi-var-zakura.png", get(serve_var_zakura))
+        .route("/assets/zashi-var-satoshi.png", get(serve_var_satoshi))
+        .route("/assets/zashi-var-kitsune.png", get(serve_var_kitsune))
+        .route("/assets/zashi-var-tachyon.png", get(serve_var_tachyon))
+        .route("/assets/zashi-var-ragu.png", get(serve_var_ragu))
         .route("/v1/demo/state", get(demo_state))
         .route("/v1/demo/reset", post(demo_reset))
         .route("/v1/demo/mint", post(demo_mint))
@@ -727,29 +732,64 @@ async fn serve_html() -> Html<&'static str> {
 
 async fn serve_mascot() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
-        include_bytes!("../../../assets/zashi-mascot.jpg").as_slice(),
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-mascot.png").as_slice(),
     )
 }
 
 async fn serve_var_streetwear() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
-        include_bytes!("../../../assets/zashi-var-streetwear.jpg").as_slice(),
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-streetwear.png").as_slice(),
     )
 }
 
 async fn serve_var_cyber() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
-        include_bytes!("../../../assets/zashi-var-cyber.jpg").as_slice(),
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-cyber.png").as_slice(),
     )
 }
 
 async fn serve_var_monk() -> impl IntoResponse {
     (
-        [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
-        include_bytes!("../../../assets/zashi-var-monk.jpg").as_slice(),
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-monk.png").as_slice(),
+    )
+}
+
+async fn serve_var_zakura() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-zakura.png").as_slice(),
+    )
+}
+
+async fn serve_var_satoshi() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-satoshi.png").as_slice(),
+    )
+}
+
+async fn serve_var_kitsune() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-kitsune.png").as_slice(),
+    )
+}
+
+async fn serve_var_tachyon() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-tachyon.png").as_slice(),
+    )
+}
+
+async fn serve_var_ragu() -> impl IntoResponse {
+    (
+        [(axum::http::header::CONTENT_TYPE, "image/png")],
+        include_bytes!("../../../assets/transparent/zashi-var-ragu.png").as_slice(),
     )
 }
 

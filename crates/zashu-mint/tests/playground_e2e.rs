@@ -10,7 +10,7 @@ async fn playground_html_and_multi_session_flow_e2e() {
     let store = Arc::new(RwLock::new(PlaygroundStore::new()));
     let app = playground_router(store);
 
-    // 1. GET / serves landing page, GET /playground serves playground HTML, GET /assets/zashi-mascot.jpg serves mascot
+    // 1. GET / serves landing page, GET /playground serves playground HTML, GET /assets/zashi-mascot.png serves mascot
     let landing_resp = app
         .clone()
         .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
@@ -35,12 +35,12 @@ async fn playground_html_and_multi_session_flow_e2e() {
     let html_bytes = axum::body::to_bytes(html_resp.into_body(), usize::MAX).await.unwrap();
     let html = String::from_utf8(html_bytes.to_vec()).unwrap();
     assert!(html.contains("ZK-Cashu Glass-Box Playground"));
-    assert!(html.contains("/assets/zashi-mascot.jpg"));
+    assert!(html.contains("/assets/zashi-mascot.png"));
     assert!(html.contains("X-Zashu-Session"));
 
     let img_resp = app
         .clone()
-        .oneshot(Request::builder().uri("/assets/zashi-mascot.jpg").body(Body::empty()).unwrap())
+        .oneshot(Request::builder().uri("/assets/zashi-mascot.png").body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(img_resp.status(), StatusCode::OK);
