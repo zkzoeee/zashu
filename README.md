@@ -87,3 +87,7 @@ crates/
 * **Specs:** [`NUTZ/README.md`](./NUTZ/README.md) (`NUTZ-1` through `NUTZ-4`)
 * **Benchmarks:** [`BENCHMARKS.md`](./BENCHMARKS.md) (1 ms verification, ~16 KB folded solvency proof, ~49.6% accumulator pruning over 10k spends)
 * **Design Roadmap:** [`IMPLEMENTATION_PLAN.md`](./IMPLEMENTATION_PLAN.md)
+
+## License
+
+[MIT](./LICENSE)
