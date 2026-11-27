@@ -2,7 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode B (Non-Uniform Ragu Subcircuits)
-* **Implementation:** enforced in-circuit by the default Ragu backend for `0x00`, `0x01`, `0x03` and `0x04`. The fallback Halo 2 backend (`ZASHU_PCD_BACKEND=halo2`), and `0x02` on either backend, check the predicate in the wallet only.
+* **Implementation:** enforced in-circuit by the default Ragu backend for all five predicates (`0x02` for up to 4 keys and 3 signers). The fallback Halo 2 backend (`ZASHU_PCD_BACKEND=halo2`) checks the predicate in the wallet only.
 
 ---
 
@@ -19,7 +19,7 @@ In standard Cashu (`NUT-10`, `NUT-11`, `NUT-14`), P2PK keys, timelocks, and HTLC
 | :--- | :--- | :--- | :--- |
 | `0x00` | `StandardSpend` | `0x00..00` | `sk` with `[sk]G == pk_owner`. |
 | `0x01` | `P2PK` | `Poseidon3(DOMAIN_PREDICATE, 0x01, K(target_pk))` | `sk` with `[sk]G == target_pk`. |
-| `0x02` | `Multisig` | byte-oriented hash of `(t, n, pk_1..pk_n)` | $t$ distinct keys from `{pk_1..pk_n}`. Not yet an in-circuit predicate. |
+| `0x02` | `Multisig` | `Poseidon7(DOMAIN_PREDICATE, 0x02 + 256 t + 65536 n, K(pk_1), K(pk_2), K(pk_3), K(pk_4), 0)`, absent keys as zero | Secret keys for $t$ distinct keys of the list ($n \le 4$, at most 3 signers proven). Larger key sets use a byte-oriented hash and are Halo 2 only. |
 | `0x03` | `Timelock` | `Poseidon4(DOMAIN_PREDICATE, 0x03, lock_epoch, K(pk_owner))` | `sk` for `pk_owner` AND `epoch >= lock_epoch`. |
 | `0x04` | `PrivateHTLC` | `Poseidon7(DOMAIN_PREDICATE, 0x04, hashlock, K(pk_receiver), K(pk_refund), expiry_epoch, 0)` | **Claim path:** `preimage` with `H(preimage) == hashlock`, and `sk_receiver`.<br>**Refund path:** `sk_refund` AND `epoch >= expiry_epoch`. |
 
@@ -31,7 +31,7 @@ A spend does not fit in one Ragu step, so a transaction is a small tree of steps
 
 1. **Path** (4 steps of 8 levels): the note commitment is a leaf under `anchor_root`.
 2. **Key**: knowledge of `sk`, exposing `K([sk]G)`.
-3. **Spend** (one circuit per predicate and branch): opens the note commitment, derives the nullifier, and enforces the predicate against the key proof.
+3. **Spend** (one circuit per predicate and branch): opens the note commitment, derives the nullifier, and enforces the predicate against the key proof. For `Multisig`, up to three key proofs are first gathered into a key set; the spend checks each is a distinct member of the committed list and that there are at least $t$.
 4. **Output**: opens each output commitment and range-checks its value.
 5. **Merge / Finalize**: anchors and epochs must agree and values add up; the final statement is `[anchor, epoch, digest, balance]`.
 

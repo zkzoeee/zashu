@@ -36,20 +36,23 @@ How to read it:
 * One-time setup per process: about 14 s of Halo 2 key generation across all circuits in this run, and about 1.5 s per Ragu application.
 * An uncompressed, still-foldable Ragu proof is about 34 MB; only the compressed root is small.
 * Proving leaves in parallel (`ZASHU_RAGU_PARALLEL=4`) was about 1.3x faster in the best run and several times slower at 8, so batch folding is sequential by default.
-* On the wire, proofs are embedded in JSON as a base64-encoded byte array, about 4.8x the raw size. That is where the "~16 KB" in section 1 comes from.
+* On the wire, proof bytes are base64 and public inputs hex inside the JSON bundle, which is base64 again: about 1.9x the raw size (a Ragu solvency proof is about 11.6 KB). The "~16 KB" in section 1 predates this and used a JSON array of numbers.
 
-### Root-binding fold, per operation
+### Root-binding and aggregated folds, per operation
 
-The default Ragu fold also proves how the event log and both roots change. Folding one operation on live accumulators (`bench_backends --bound-fold-only`):
+The default Ragu fold also proves how the event log and both roots change; the opt-in aggregated fold additionally checks each operation against its transaction proof. Folding one operation on live accumulators (`bench_backends --bound-fold-only`):
 
-| One operation | Ragu fold time |
-| :--- | ---: |
-| value step only (epoch advance) | 923 ms |
-| shielded mint: value + 1 note insert | 6,497 ms |
-| shielded swap: value + 1 nullifier + 2 note inserts | 23,652 ms |
-| shielded melt: value + 1 nullifier insert | 12,110 ms |
+| One operation | Ragu fold | verify | proof | Aggregated fold | verify | proof |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| value step only (epoch advance) | 891 ms | 76 ms | 6,208 B | 6,288 ms | 358 ms | 19,392 B |
+| shielded mint: value + 1 note insert | 5,983 ms | 74 ms | 6,208 B | 11,254 ms | 360 ms | 19,392 B |
+| shielded swap: value + 1 nullifier + 2 note inserts | 21,432 ms | 74 ms | 6,208 B | 26,809 ms | 333 ms | 19,392 B |
+| shielded melt: value + 1 nullifier insert | 11,116 ms | 76 ms | 6,208 B | 16,522 ms | 334 ms | 19,392 B |
 
-That is about 1 s for the value step, 5.6 s per note insert (8 Merkle-update steps and the insert) and 11.2 s per nullifier insert (two Merkle updates, an order check and the insert). The mint does this on its background worker, so it bounds how fast the solvency proof can keep up, not how fast requests are answered; it does compete with transaction proving for CPU. The solvency-fold rows in the table above use value-only steps. `ZASHU_PCD_BACKEND=ragu-unbound` skips the root bindings.
+* **Default fold:** about 1 s for the value step, 5 to 6 s per note insert (8 Merkle-update steps and the insert) and about 10 s per nullifier insert (two Merkle updates, an order check and the insert).
+* **Aggregated fold:** about 5.4 s on top per operation (compress, decompress and two aggregator steps), plus about 2.4 s to decompress a transaction proof when the operation has one. The aggregator application takes about 25 s to build on first use, a proof in flight is about 172 MB, and the mint's shielded end-to-end test peaked at 3.1 GB.
+* The mint folds on its background worker, so this bounds how fast the solvency proof can keep up, not how fast requests are answered; it does compete with transaction proving for CPU. The solvency-fold rows in the table above use value-only steps. `ZASHU_PCD_BACKEND=ragu-unbound` skips the root bindings.
+* The mint's shielded end-to-end test takes about 8 s on Halo 2, 52 s on `ragu-unbound`, 142 s on the default and 226 s on `ragu-aggregated`.
 
 ## 2. Tachyon Nullifier Accumulator & Epoch Pruning
 
