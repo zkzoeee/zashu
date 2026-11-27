@@ -16,6 +16,15 @@ pub fn generator_h_blind() -> PallasPoint {
     pallas::Point::hash_to_curve("zashu-pedersen-v1")(b"H_blind")
 }
 
+/// A Pedersen commitment to a note's value.
+///
+/// These are **not** part of what the mint relies on. No proof on either
+/// backend ties a `ValueCommitment` to the value inside a note commitment,
+/// and the mint cannot look up the commitments of the notes being spent
+/// (a nullifier does not reveal which note it belongs to). On the Ragu
+/// backend value conservation is proven in-circuit over the note openings
+/// themselves, which makes these commitments redundant. They are kept on
+/// the wire for wallets that want a homomorphic check between each other.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ValueCommitment {
     #[serde(with = "hex32")]

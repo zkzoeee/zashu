@@ -80,7 +80,7 @@ Measured locally:
 * A full playground run takes about **25 s** on a 10-core laptop with Ragu, against about 5 s with Halo 2. Expect it to be several times slower on shared vCPUs; Ragu has not been timed on Fly.
 * The single-core timings previously listed here (stealth send about 13 s, melt about 6 s) were measured on Halo 2 and have not been re-measured for Ragu.
 * The solvency proof is folded on a background thread, and binding the roots costs about 24 s per shielded swap on a laptop. On small shared CPUs the fold can lag well behind a burst of activity, and `/v1/solvency` waits for it to catch up. `ZASHU_PCD_BACKEND=ragu-unbound` cuts that to about 1 s per operation at the cost of not proving root changes.
-* To keep the old speed, set `ZASHU_PCD_BACKEND=halo2` in the machine's environment. That backend does not prove note openings or predicates.
+* **The demo is pinned to Halo 2.** `fly.toml` sets `ZASHU_PCD_BACKEND=halo2` under `[env]`, so a deploy keeps the old speed even though the binary is built with Ragu. That backend does not prove note openings or predicates. Delete the `[env]` entry to run the demo on Ragu.
 * The build now fetches Ragu from GitHub (a pinned git dependency), so the Docker build needs network access to `github.com` as well as crates.io. The image builds locally in about 2.5 minutes, and a container limited to 4 CPUs and 2 GB served a Ragu solvency proof in about 3 s.
 
 Proving runs across multiple threads, so more vCPUs make the playground noticeably snappier. The config uses `shared-cpu-4x` with 2 GB. Because the machine scales to zero, you're billed for CPU and RAM only while it's running, plus a small amount for its root filesystem. Lower the size if you want to:

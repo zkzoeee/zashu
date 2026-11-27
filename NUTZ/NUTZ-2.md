@@ -14,7 +14,7 @@ Standard Cashu requires power-of-2 denominations (`1, 2, 4, 8, ...`) and exposes
 
 * **Note Preimage:**
   `Note = (v: u64, pk_owner: Fp, predicate_id: u8, predicate_params_hash: Fp, rho: Fp, r: Fp)`
-* **Value Commitment (Pedersen on Pallas):**
+* **Value Commitment (Pedersen on Pallas, informational):** carried alongside each note for wallet-to-wallet homomorphic checks. It is not a soundness check at the mint: no proof ties it to the value inside `cm`, and the mint cannot look up the commitments of spent notes. On the Ragu backend value conservation is proven directly over the note openings.
   $$C_v = v \cdot G_{\text{val}} + r_v \cdot H_{\text{blind}}$$
 * **Note Commitment:**
   $$\text{cm} = \text{Poseidon}(\text{DOMAIN\_NOTE}, v, \text{pk\_owner}, \text{predicate\_id}, \text{predicate\_params\_hash}, \rho, r)$$
@@ -38,7 +38,7 @@ Returns mint verifying key hash, current `MintState`, rolling anchor window size
 ### `POST /v1/zk/mint`
 Mints a single arbitrary-amount shielded note against a paid quote (e.g., BOLT11 invoice).
 * **Request:** `{ "quote_id": "...", "cm": "0x...", "cv": "0x...", "proof": "<base64>" }`
-* **Circuit Checks:** `cm` opens to `v == quote.amount`, `0 <= v < 2^64`, `cv` matches `v`.
+* **Circuit Checks:** `cm` opens to `v == quote.amount`, `0 <= v < 2^64` (Ragu backend). `cv` is not checked against `v` by any proof.
 * **Response:** `{ "leaf_index": 123, "witness": {...}, "state": {...}, "mint_signature": "0x..." }`
 
 ### `POST /v1/zk/swap`

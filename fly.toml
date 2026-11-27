@@ -11,6 +11,12 @@ kill_timeout = "5s"
 [build]
   dockerfile = "Dockerfile"
 
+# The public demo stays on the Halo 2 backend for now: it is several times
+# faster on shared CPUs. Remove this to run the default Ragu backend
+# (see DEPLOY.md, section 4, for what that costs).
+[env]
+  ZASHU_PCD_BACKEND = "halo2"
+
 [http_service]
   internal_port = 8080
   force_https = true

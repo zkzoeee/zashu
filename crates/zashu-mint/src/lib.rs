@@ -328,6 +328,11 @@ impl ZashuMint {
             &req.anchor_root,
             &req.nullifiers,
             &req.output_commitments,
+            // No input value commitments: a nullifier does not identify the
+            // note it spends, so the mint has none to compare with. Value
+            // conservation is established by the proof (in-circuit on the
+            // Ragu backend); the Pedersen commitments are carried for
+            // wallets and are not a soundness check here.
             &[],
             &req.output_value_commitments,
         )
