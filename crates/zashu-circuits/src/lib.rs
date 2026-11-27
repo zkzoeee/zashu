@@ -9,6 +9,7 @@ pub(crate) mod ragu_app;
 #[cfg(feature = "ragu")]
 pub mod ragu_gadgets;
 pub mod range_check;
+pub mod spec;
 
 pub use error::{CircuitError, Result};
 pub use pcd::{

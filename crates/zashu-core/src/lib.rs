@@ -3,6 +3,7 @@ pub mod field;
 pub mod pedersen;
 pub mod poseidon;
 pub mod reserves;
+pub mod spec;
 pub mod stealth;
 pub mod token;
 pub mod types;

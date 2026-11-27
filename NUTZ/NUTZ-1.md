@@ -2,6 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode A (Backward-compatible with standard Cashu & Fedimint; also audits Mode B)
+* **Statements:** [`NUTZ-0`](./NUTZ-0.md) §6 defines the operation and chain statements both backends are being moved onto. §2.1 below describes what the mint runs today, where the two backends still prove different things.
 
 ---
 

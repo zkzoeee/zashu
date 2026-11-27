@@ -4,6 +4,7 @@
 
 | Spec | Mode | Title | Status |
 | :--- | :--- | :--- | :--- |
+| [NUTZ-0](./NUTZ-0.md) | Both | Proof Statements (what every backend proves) | Draft |
 | [NUTZ-1](./NUTZ-1.md) | Mode A | Verifiable ZK Mint Solvency & Prunable Nullifiers | Draft |
 | [NUTZ-2](./NUTZ-2.md) | Mode B | Arbitrary-Amount Shielded Ecash Notes & Mint API | Draft |
 | [NUTZ-3](./NUTZ-3.md) | Mode B | Oblivious Witness Sync, `zashuA` Tokens & Stealth Async Receives | Draft |

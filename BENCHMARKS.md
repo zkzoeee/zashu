@@ -63,3 +63,35 @@ The Ragu fold (`ZASHU_PCD_BACKEND=ragu`) also proves how the event log and both 
 * **Accumulator Merkle nodes before prune:** `20,028`
 * Pruning evicts cached interior nodes; a pruned node is recomputed from its leaves when next needed, so roots and witnesses stay correct. (Earlier builds treated pruned nodes as empty, which broke witnesses after a prune.)
 * **Accumulator Merkle nodes after prune:** `10,100` (`9,928` interior nodes pruned, ~49.6% reduction).
+
+## 4. Halo 2 vs Ragu on the same statements (`NUTZ-0`)
+
+Sections 1 to 3 compare the circuits the mint runs today, where the two backends prove different things. Here both prove the statements of [`NUTZ-0`](./NUTZ/NUTZ-0.md) and pass the same conformance suite, so the figures are like for like.
+
+Measured with `cargo run --release -p zashu-circuits --example bench_spec` on a 10-core Apple Silicon laptop: best of 2 after a warm-up, trees holding 1,000 notes and 1,000 nullifiers. The machine was running other applications, so read differences under about 10% as noise.
+
+| Workload | Halo 2 prove | Ragu prove | Ragu / Halo 2 | Halo 2 verify | Ragu verify | Halo 2 proof | Ragu proof |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| tx: shielded mint | 248 ms | 1,869 ms | 7.5x | 4.4 ms | 73.2 ms | 4,736 B | 6,208 B |
+| tx: swap, one real input | 248 ms | 3,289 ms | 13x | 4.4 ms | 74.5 ms | 4,736 B | 6,208 B |
+| tx: swap, two real inputs | 248 ms | 3,294 ms | 13x | 4.4 ms | 72.6 ms | 4,736 B | 6,208 B |
+| tx: timelock spend | 250 ms | 3,679 ms | 15x | 4.4 ms | 74.3 ms | 4,736 B | 6,208 B |
+| tx: HTLC claim | 250 ms | 3,752 ms | 15x | 4.3 ms | 73.9 ms | 4,736 B | 6,208 B |
+| tx: 2-of-3 multisig spend | 249 ms | 3,746 ms | 15x | 4.3 ms | 73.4 ms | 4,736 B | 6,208 B |
+| op: legacy mint (value only) | 628 ms | 852 ms | 1.4x | 7.6 ms | 73.2 ms | 7,264 B | 6,208 B |
+| op: shielded mint (1 note) | 597 ms | 2,841 ms | 4.8x | 7.9 ms | 73.2 ms | 7,264 B | 6,208 B |
+| op: swap (2 nullifiers, 2 notes) | 598 ms | 10,959 ms | 18x | 7.6 ms | 72.5 ms | 7,264 B | 6,208 B |
+| op: melt (2 nullifiers, 2 notes) | 598 ms | 10,436 ms | 17x | 7.5 ms | 73.1 ms | 7,264 B | 6,208 B |
+| chain of 4 operations | 2,406 ms | 26,477 ms | 11x | 10.3 ms | 72.0 ms | 29,056 B | 6,208 B |
+| chain of 16 operations | 9,675 ms | 162,311 ms | 17x | 22.4 ms | 74.8 ms | 116,224 B | 6,208 B |
+
+The Halo 2 column is from a second run of that backend alone (`bench_spec -- halo2`), because the machine was busiest during its part of the joint run; the Ragu column is from the joint run.
+
+How to read it:
+
+* **Halo 2 proves every statement faster, by 13 to 18 times on the common cases.** Its cost is flat: one fixed circuit per statement, so a mint costs the same as a multisig spend, and an operation with no inserts the same as one with four.
+* **Ragu's cost follows the work.** A value-only operation is one step and nearly matches Halo 2. Each nullifier insert adds about 4 s and a pair of note appends about 2 s.
+* **Ragu's proof and verify time are constant.** The whole history is one 6,208-byte proof verified in about 73 ms. Halo 2's chain is one proof per operation: 7,264 bytes each (plus that operation's statement, which the size column does not count), verified in a batch at roughly 1 ms per operation. Halo 2 verifies faster up to about 50 operations; beyond that Ragu does, and Ragu's bundle is smaller from the second operation on.
+* **Halo 2's circuits here are tuned for speed over size.** The transaction circuit is `k = 11` with 3 Poseidon column groups side by side and the operation circuit `k = 12` with 6. One group each (`k = 13` and `k = 15`) gives proofs of about 3.3 and 3.5 KB at two to four times the proving time.
+* **Predicate hiding differs in kind.** Halo 2 has one transaction circuit, so its zero-knowledge property hides which predicate ran. Ragu's hiding rests on rerandomisation, which Ragu does not yet claim to have proven.
+* Both are far cheaper than the circuits of sections 1 to 3 for what they prove: the one-permutation node hash and hash-based keys removed most of the work. The Ragu swap was 4.3 s with one input and weaker padding; it is 3.3 s here with two inputs always proven.

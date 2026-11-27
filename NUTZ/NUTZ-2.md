@@ -2,6 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode B (Requires `NUTZ-1` unified `MintState`)
+* **Statements:** [`NUTZ-0`](./NUTZ-0.md) §3 and §5 define the note format and transaction statement both backends are being moved onto: Poseidon-only notes, a fixed two-input, two-output shape with dummy notes, and no Pedersen commitments. This document describes what the mint runs today.
 
 ---
 

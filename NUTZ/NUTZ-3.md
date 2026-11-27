@@ -2,6 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode B (Companion to `NUTZ-2`)
+* **Keys under `NUTZ-0`:** [`NUTZ-0`](./NUTZ-0.md) §3 replaces the curve-point spend key with `spend_pk = H(spend_sk)` and locks a note to `K = H(spend_pk, tweak)`. The scan key stays a Pallas point and the Diffie-Hellman exchange below is unchanged, but its result becomes the `tweak` instead of a point added to the spend key. This document describes what the wallet runs today.
 
 ---
 

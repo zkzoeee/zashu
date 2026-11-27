@@ -2,6 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode B (Non-Uniform Ragu Subcircuits)
+* **Statements:** [`NUTZ-0`](./NUTZ-0.md) §4 defines the predicates both backends are being moved onto. There every backend enforces them inside the proof, P2PK folds into the key predicate, and keys are hash-based. This document describes what the mint runs today.
 * **Implementation:** enforced in-circuit by the Ragu backend (`ZASHU_PCD_BACKEND=ragu`) for all five predicates (`0x02` for up to 4 keys and 3 signers). The default Halo 2 backend checks the predicate in the wallet only.
 
 ---
