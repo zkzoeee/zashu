@@ -64,14 +64,18 @@ async fn main() -> Result<()> {
     };
 
     println!(
-        "SOLVENT | epoch={} | liabilities={} sats | reserves={} sats | verified in {}ms | proof={} | steps proven={} | roots bound={}",
+        "SOLVENT | epoch={} | liabilities={} sats | reserves={} sats | verified in {}ms | proof={} | steps proven={} | roots bound={} | unbound ops={}",
         report.epoch,
         report.total_liabilities,
         report.total_reserves,
         report.verify_ms,
         report.fold_proof,
         report.steps_proven,
-        report.roots_bound
+        report.roots_bound,
+        match (report.unbound_ops, report.ops) {
+            (Some(u), Some(n)) => format!("{u}/{n}"),
+            _ => "n/a".to_string(),
+        }
     );
     Ok(())
 }

@@ -17,10 +17,12 @@ use crate::range_check::RangeCheck64Config;
 #[cfg(feature = "ragu")]
 pub mod ragu_backend;
 #[cfg(feature = "ragu")]
+pub mod ragu_aggregate;
+#[cfg(feature = "ragu")]
 pub mod ragu_roots;
 
 /// Environment variable read by [`FoldBackend::from_env`]: `ragu`,
-/// `ragu-unbound` or `halo2`.
+/// `ragu-aggregated`, `ragu-unbound` or `halo2`.
 /// Unset selects Ragu when it is compiled in (the default build), else Halo 2.
 pub const PCD_BACKEND_ENV: &str = "ZASHU_PCD_BACKEND";
 /// Older name for [`PCD_BACKEND_ENV`], still honoured when that one is unset.
@@ -45,6 +47,10 @@ pub enum FoldBackend {
     /// and checks liabilities, but roots and the event log move freely. Much
     /// cheaper to prove. Mode B transactions are proven as with [`Self::Ragu`].
     RaguUnbound,
+    /// [`Self::Ragu`], plus a Ragu aggregator that checks each operation
+    /// against the shielded transaction proof that authorised it and counts
+    /// the operations that had none. The heaviest option by far.
+    RaguAggregated,
 }
 
 impl FoldBackend {
@@ -63,8 +69,9 @@ impl FoldBackend {
             "halo2" => Ok(Self::Halo2),
             "ragu" => Ok(Self::Ragu),
             "ragu-unbound" => Ok(Self::RaguUnbound),
+            "ragu-aggregated" => Ok(Self::RaguAggregated),
             other => Err(CircuitError::InvalidWitness(format!(
-                "{name}={other:?}: expected \"ragu\", \"ragu-unbound\" or \"halo2\""
+                "{name}={other:?}: expected \"ragu\", \"ragu-aggregated\", \"ragu-unbound\" or \"halo2\""
             ))),
         }
     }
@@ -75,10 +82,25 @@ impl FoldBackend {
         match Self::from_env()? {
             Self::Halo2 => Ok(false),
             #[cfg(feature = "ragu")]
-            Self::Ragu | Self::RaguUnbound => Ok(true),
+            Self::Ragu | Self::RaguUnbound | Self::RaguAggregated => Ok(true),
             #[cfg(not(feature = "ragu"))]
-            Self::Ragu | Self::RaguUnbound => Err(ragu_unavailable()),
+            Self::Ragu | Self::RaguUnbound | Self::RaguAggregated => Err(ragu_unavailable()),
         }
+    }
+}
+
+/// `(ops, unbound_ops)` of an aggregated fold proof: how many operations it
+/// covers and how many had no matching shielded transaction proof. `None`
+/// for other proofs.
+pub fn fold_op_counts(proof: &FoldedProof) -> Option<(u64, u64)> {
+    #[cfg(feature = "ragu")]
+    {
+        ragu_aggregate::op_counts(proof)
+    }
+    #[cfg(not(feature = "ragu"))]
+    {
+        let _ = proof;
+        None
     }
 }
 
@@ -109,8 +131,12 @@ impl IncrementalFold {
             FoldBackend::RaguUnbound => {
                 Ok(Self { backend, folder: Some(ragu_backend::BackgroundFolder::spawn()) })
             }
+            #[cfg(feature = "ragu")]
+            FoldBackend::RaguAggregated => Ok(Self { backend, folder: Some(ragu_aggregate::background()) }),
             #[cfg(not(feature = "ragu"))]
-            FoldBackend::Ragu | FoldBackend::RaguUnbound => Err(ragu_unavailable()),
+            FoldBackend::Ragu | FoldBackend::RaguUnbound | FoldBackend::RaguAggregated => {
+                Err(ragu_unavailable())
+            }
         }
     }
 
@@ -667,8 +693,12 @@ pub fn verify_mode_a_step(proof: &FoldedProof) -> Result<()> {
         SubcircuitId::RaguFold => ragu_backend::verify(proof),
         #[cfg(feature = "ragu")]
         SubcircuitId::RaguFoldRoots => ragu_roots::verify(proof),
+        #[cfg(feature = "ragu")]
+        SubcircuitId::RaguFoldAggregated => ragu_aggregate::verify(proof),
         #[cfg(not(feature = "ragu"))]
-        SubcircuitId::RaguFold | SubcircuitId::RaguFoldRoots => Err(ragu_unavailable()),
+        SubcircuitId::RaguFold | SubcircuitId::RaguFoldRoots | SubcircuitId::RaguFoldAggregated => {
+            Err(ragu_unavailable())
+        }
         other => Err(CircuitError::VerificationFailed(format!(
             "unexpected subcircuit in Mode A: {other:?}"
         ))),
@@ -698,8 +728,10 @@ pub fn fold_mode_a_batch_with(
         FoldBackend::Ragu => ragu_roots::fold(start_state, end_state, step_proofs),
         #[cfg(feature = "ragu")]
         FoldBackend::RaguUnbound => ragu_backend::fold(start_state, end_state, step_proofs),
+        #[cfg(feature = "ragu")]
+        FoldBackend::RaguAggregated => ragu_aggregate::fold(start_state, end_state, step_proofs),
         #[cfg(not(feature = "ragu"))]
-        FoldBackend::Ragu | FoldBackend::RaguUnbound => Err(ragu_unavailable()),
+        FoldBackend::Ragu | FoldBackend::RaguUnbound | FoldBackend::RaguAggregated => Err(ragu_unavailable()),
     }
 }
 

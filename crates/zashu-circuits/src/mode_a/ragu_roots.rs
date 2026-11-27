@@ -804,7 +804,7 @@ fn step_parts(step: &FoldedProof) -> Result<(StepKind, &StateTransition)> {
 }
 
 /// Proves one mint operation as its chain of single-purpose transitions.
-fn prove_step(app: &App, step: &FoldedProof) -> Result<(TransitionPcd, StateFields, StateFields)> {
+pub(super) fn prove_step(app: &App, step: &FoldedProof) -> Result<(TransitionPcd, StateFields, StateFields)> {
     let (kind, t) = step_parts(step)?;
     let (prev, next) = (&t.prev, &t.next);
     let invalid = |msg: &str| CircuitError::InvalidWitness(format!("{:?} step: {msg}", step.subcircuit));

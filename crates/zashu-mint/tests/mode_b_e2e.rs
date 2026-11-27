@@ -360,6 +360,10 @@ fn mode_b_lifecycle_interop_stealth_and_cross_mint_swap() {
     // event-log and root change this whole lifecycle made.
     let default_backend =
         std::env::var("ZASHU_PCD_BACKEND").is_err() && std::env::var("ZASHU_FOLD_BACKEND").is_err();
+    eprintln!(
+        "solvency proof: {} | steps proven={} roots bound={} ops={:?} unbound={:?}",
+        report_a.fold_proof, report_a.steps_proven, report_a.roots_bound, report_a.ops, report_a.unbound_ops
+    );
     if cfg!(feature = "ragu") && default_backend {
         assert!(report_a.steps_proven && report_a.roots_bound, "{}", report_a.fold_proof);
     }

@@ -210,6 +210,8 @@ pub struct ZashuMint {
     /// proof carries them so the fold can bind the root changes.
     pending_nullifier_updates: Vec<NullifierTransitionWitness>,
     pending_note_updates: Vec<LeafUpdate>,
+    /// The Ragu transaction proof of the operation in progress, if it has one.
+    pending_tx_proof: Option<FoldedProof>,
     /// Folds steps in the background when the Ragu backend is selected.
     incremental_fold: IncrementalFold,
     epoch_commitments: Vec<(u64, u64, NoteCommitment)>,
@@ -241,6 +243,7 @@ impl ZashuMint {
             step_proofs: Vec::new(),
             pending_nullifier_updates: Vec::new(),
             pending_note_updates: Vec::new(),
+            pending_tx_proof: None,
             incremental_fold: IncrementalFold::from_env()
                 .expect("invalid ZASHU_FOLD_BACKEND or backend not compiled in"),
             epoch_commitments: Vec::new(),
@@ -285,6 +288,7 @@ impl ZashuMint {
         self.check_proof_epoch(&proof)?;
         verify_zk_mint(&proof, req.amount, &req.cm, &req.cv)
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.remember_tx_proof(&proof);
 
         let prev = self.state.clone();
         let leaf_index = self.insert_note(req.cm.0)?;
@@ -337,6 +341,7 @@ impl ZashuMint {
             &req.output_value_commitments,
         )
         .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.remember_tx_proof(&proof);
 
         let prev = self.state.clone();
         let mut transitions = Vec::with_capacity(req.nullifiers.len());
@@ -389,6 +394,7 @@ impl ZashuMint {
             &req.nullifiers,
         )
         .map_err(|e| MintError::InvalidProof(e.to_string()))?;
+        self.remember_tx_proof(&proof);
 
         let prev = self.state.clone();
         for nf in &req.nullifiers {
@@ -577,6 +583,14 @@ impl ZashuMint {
         }
     }
 
+    /// Keeps a verified Ragu transaction proof for the step this operation
+    /// records, so the aggregated fold can check the operation against it.
+    fn remember_tx_proof(&mut self, proof: &FoldedProof) {
+        if proof.subcircuit == zashu_circuits::SubcircuitId::RaguTx {
+            self.pending_tx_proof = Some(proof.clone());
+        }
+    }
+
     /// Appends a note commitment, remembering the update for the fold proof.
     fn insert_note(&mut self, cm: [u8; 32]) -> Result<u64> {
         if bytes_to_fp(&cm).is_err() {
@@ -601,10 +615,13 @@ impl ZashuMint {
     /// Records a Mode A step proof, attaching the accumulator updates made
     /// since the previous step, and queues it for background folding.
     fn record_step(&mut self, step: FoldedProof) {
-        let step = step.with_root_updates(
+        let mut step = step.with_root_updates(
             std::mem::take(&mut self.pending_nullifier_updates),
             std::mem::take(&mut self.pending_note_updates),
         );
+        if let Some(tx) = self.pending_tx_proof.take() {
+            step = step.with_tx_proof(tx);
+        }
         self.incremental_fold.push(&step);
         self.step_proofs.push(step);
     }

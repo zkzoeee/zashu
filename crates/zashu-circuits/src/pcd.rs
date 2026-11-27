@@ -34,6 +34,9 @@ pub enum SubcircuitId {
     RaguFold,
     /// Ragu Mode A fold that also binds event-log and root changes.
     RaguFoldRoots,
+    /// Ragu Mode A fold that additionally checks each operation against its
+    /// shielded transaction proof, inside a Ragu aggregator.
+    RaguFoldAggregated,
     /// Mode B transaction produced by the Ragu PCD backend (`ragu` feature).
     RaguTx,
     ZkMint,
@@ -143,6 +146,9 @@ pub struct StateTransition {
     /// Note commitments appended by this step, in order.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub note_updates: Vec<LeafUpdate>,
+    /// The Ragu transaction proof that authorised this operation, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tx_proof: Option<Box<FoldedProof>>,
 }
 
 impl FoldedProof {
@@ -153,6 +159,7 @@ impl FoldedProof {
             event: None,
             nullifier_updates: Vec::new(),
             note_updates: Vec::new(),
+            tx_proof: None,
         }));
         self
     }
@@ -162,6 +169,15 @@ impl FoldedProof {
     pub fn with_event(mut self, hash: [u8; 32]) -> Self {
         if let Some(t) = self.transition.as_mut() {
             t.event = Some(hash);
+        }
+        self
+    }
+
+    /// Attaches the shielded transaction proof that authorised this operation.
+    /// The aggregated Ragu fold checks the operation against it.
+    pub fn with_tx_proof(mut self, tx: FoldedProof) -> Self {
+        if let Some(t) = self.transition.as_mut() {
+            t.tx_proof = Some(Box::new(tx));
         }
         self
     }

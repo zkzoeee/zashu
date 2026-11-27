@@ -197,20 +197,29 @@ fn bound_fold_ops() {
     let genesis = MintState::genesis(nfs.root(), notes.root());
     let mut state = genesis.clone();
     let time = |name: &str, start: &MintState, end: &MintState, step: FoldedProof| {
-        let t = Instant::now();
-        let folded = fold_mode_a_batch_with(FoldBackend::Ragu, start, end, &[step]).unwrap();
-        let ms = t.elapsed().as_secs_f64() * 1e3;
-        verify_fold_batch(&folded, &start.state_hash(), end).unwrap();
-        println!("| {name} | {ms:.0} ms |");
+        let mut cells = Vec::new();
+        for backend in [FoldBackend::Ragu, FoldBackend::RaguAggregated] {
+            let t = Instant::now();
+            let folded = fold_mode_a_batch_with(backend, start, end, &[step.clone()]).unwrap();
+            let fold_ms = t.elapsed().as_secs_f64() * 1e3;
+            let t = Instant::now();
+            verify_fold_batch(&folded, &start.state_hash(), end).unwrap();
+            let verify_ms = t.elapsed().as_secs_f64() * 1e3;
+            cells.push(format!("{fold_ms:.0} ms | {verify_ms:.0} ms | {} B", folded.ipa_proof.len()));
+        }
+        println!("| {name} | {} |", cells.join(" | "));
     };
-    println!("\n| Root-binding fold, one operation | Ragu fold time |");
-    println!("| :--- | ---: |");
+    println!("\n| One operation | Ragu fold | verify | proof | Aggregated fold | verify | proof |");
+    println!("| :--- | ---: | ---: | ---: | ---: | ---: | ---: |");
 
     // Warm-up builds the application.
     let prev = state.clone();
     state.epoch += 1;
     let warm = prove_swap_step(&prev, &state, 0, 0, &[]).unwrap();
     fold_mode_a_batch_with(FoldBackend::Ragu, &prev, &state, &[warm.clone()]).unwrap();
+    let t = Instant::now();
+    fold_mode_a_batch_with(FoldBackend::RaguAggregated, &prev, &state, &[warm.clone()]).unwrap();
+    eprintln!("[ragu-aggregated] first fold, including application build: {:.1} s", t.elapsed().as_secs_f64());
     time("value step only (epoch advance)", &prev, &state, warm);
 
     let prev = state.clone();

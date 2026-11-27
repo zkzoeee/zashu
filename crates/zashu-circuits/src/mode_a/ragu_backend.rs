@@ -67,7 +67,7 @@ pub(crate) const DIGEST: usize = 5;
 /// The note root at the start of the leftmost transition.
 pub(crate) const ANCHOR: usize = 6;
 
-pub(super) fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
+pub(crate) fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
     CircuitError::Plonk(format!("ragu {context}: {e}"))
 }
 
@@ -98,7 +98,7 @@ pub(super) enum StepKind {
 
 /// The preimage of a `MintState::state_hash`.
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub(super) struct StateFields {
+pub(crate) struct StateFields {
     pub(super) epoch: u64,
     pub(super) liabilities: u64,
     pub(super) nf_root: Fp,
@@ -478,13 +478,12 @@ pub(super) fn finish_with<const HS: usize>(
 pub(super) type Running = (TransitionPcd, StateFields, usize);
 
 /// How a [`BackgroundFolder`] proves and compresses, so the worker can serve
-/// either Ragu fold application.
-#[derive(Clone, Copy)]
-pub(super) struct FolderOps {
+/// any of the Ragu fold applications. `P` is the running proof's type.
+pub(super) struct FolderOps<P> {
     /// Fuses one more step onto the running proof.
-    pub(super) extend: fn(Option<Running>, &FoldedProof) -> Result<Running>,
+    pub(super) extend: fn(Option<(P, StateFields, usize)>, &FoldedProof) -> Result<(P, StateFields, usize)>,
     /// Compresses the running proof.
-    pub(super) finish: fn(&TransitionPcd, usize) -> Result<FoldedProof>,
+    pub(super) finish: fn(&P, usize) -> Result<FoldedProof>,
 }
 
 enum FolderMsg {
@@ -510,12 +509,12 @@ impl BackgroundFolder {
         })
     }
 
-    pub(super) fn spawn_with(ops: FolderOps) -> Self {
+    pub(super) fn spawn_with<P: Send + 'static>(ops: FolderOps<P>) -> Self {
         let (tx, rx) = mpsc::channel::<FolderMsg>();
         std::thread::Builder::new()
             .name("zashu-ragu-fold".into())
             .spawn(move || {
-                let mut acc: Option<Running> = None;
+                let mut acc: Option<(P, StateFields, usize)> = None;
                 let mut poisoned: Option<String> = None;
                 for msg in rx {
                     match msg {

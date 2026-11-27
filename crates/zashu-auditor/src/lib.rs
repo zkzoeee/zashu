@@ -44,6 +44,13 @@ pub struct AuditReport {
     /// changed (`RaguFoldRoots`).
     #[serde(default)]
     pub roots_bound: bool,
+    /// Aggregated fold only: how many operations the proof covers, and how
+    /// many of them had no matching shielded transaction proof (legacy
+    /// BDHKE operations, shield/unshield, stale anchors).
+    #[serde(default)]
+    pub ops: Option<u64>,
+    #[serde(default)]
+    pub unbound_ops: Option<u64>,
 }
 
 /// Computes the deterministic mint signature tag over `(mint_id, state_hash)`.
@@ -83,6 +90,7 @@ pub fn verify_solvency_bundle(
     verify_fold_batch(&proof, &bundle.genesis_state_hash, &bundle.state)
         .map_err(|e| AuditError::InvalidPcdProof(e.to_string()))?;
 
+    let counts = zashu_circuits::mode_a::fold_op_counts(&proof);
     let total_reserves =
         verify_reserves_attestation(&bundle.mint_id, &bundle.state, &bundle.reserves, utxo_provider)
             .map_err(|e| AuditError::ReservesFailed(e.to_string()))?;
@@ -94,7 +102,12 @@ pub fn verify_solvency_bundle(
         total_reserves,
         verify_ms: start.elapsed().as_millis(),
         fold_proof: format!("{:?}", proof.subcircuit),
-        steps_proven: matches!(proof.subcircuit, SubcircuitId::RaguFold | SubcircuitId::RaguFoldRoots),
-        roots_bound: proof.subcircuit == SubcircuitId::RaguFoldRoots,
+        steps_proven: matches!(
+            proof.subcircuit,
+            SubcircuitId::RaguFold | SubcircuitId::RaguFoldRoots | SubcircuitId::RaguFoldAggregated
+        ),
+        roots_bound: matches!(proof.subcircuit, SubcircuitId::RaguFoldRoots | SubcircuitId::RaguFoldAggregated),
+        ops: counts.map(|c| c.0),
+        unbound_ops: counts.map(|c| c.1),
     })
 }
