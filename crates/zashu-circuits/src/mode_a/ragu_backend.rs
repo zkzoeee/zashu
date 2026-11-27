@@ -20,7 +20,7 @@
 //! the same layout as the Halo 2 `FoldBatch` proof:
 //! `[start_liabilities, end_liabilities, start_state, end_state, step_count]`.
 
-use std::sync::{mpsc, OnceLock};
+use std::sync::{mpsc, Mutex, OnceLock};
 
 use ragu::circuits::polynomials::R;
 use ragu::drivers::{Driver, DriverValue};
@@ -534,10 +534,45 @@ impl BackgroundFolder {
     /// Waits for every queued step to be folded, then compresses the running
     /// proof. Returns `None` if no step was pushed yet.
     pub fn snapshot(&self) -> Result<Option<FoldedProof>> {
+        self.request_snapshot().wait()
+    }
+
+    /// Asks for a snapshot of everything queued so far, without waiting for
+    /// it. Steps pushed afterwards are not part of it.
+    pub fn request_snapshot(&self) -> PendingSnapshot {
         let (reply, rx) = mpsc::channel();
-        let gone = || CircuitError::Plonk("ragu background fold worker stopped".into());
-        self.tx.send(FolderMsg::Snapshot(reply)).map_err(|_| gone())?;
-        rx.recv().map_err(|_| gone())?
+        let sent = self.tx.send(FolderMsg::Snapshot(reply)).is_ok();
+        PendingSnapshot { rx: sent.then(|| Mutex::new(rx)) }
+    }
+}
+
+/// A snapshot the background worker has been asked for.
+pub struct PendingSnapshot {
+    // In a mutex only so the handle is `Sync` and can sit in shared state.
+    rx: Option<Mutex<mpsc::Receiver<Result<Option<FoldedProof>>>>>,
+}
+
+impl PendingSnapshot {
+    fn gone() -> CircuitError {
+        CircuitError::Plonk("ragu background fold worker stopped".into())
+    }
+
+    /// Blocks until the worker has folded up to the request and compressed.
+    pub fn wait(self) -> Result<Option<FoldedProof>> {
+        let rx = self.rx.ok_or_else(Self::gone)?.into_inner().map_err(|_| Self::gone())?;
+        rx.recv().map_err(|_| Self::gone())?
+    }
+
+    /// The snapshot if it is ready; `None` while the worker is still folding.
+    pub fn try_take(&mut self) -> Option<Result<Option<FoldedProof>>> {
+        let Some(rx) = self.rx.as_mut().and_then(|rx| rx.get_mut().ok()) else {
+            return Some(Err(Self::gone()));
+        };
+        match rx.try_recv() {
+            Ok(result) => Some(result),
+            Err(mpsc::TryRecvError::Empty) => None,
+            Err(mpsc::TryRecvError::Disconnected) => Some(Err(Self::gone())),
+        }
     }
 }
 

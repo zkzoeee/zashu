@@ -135,11 +135,54 @@ impl IncrementalFold {
     /// The proof of everything pushed so far, or `None` when this backend does
     /// not fold incrementally or nothing was pushed.
     pub fn snapshot(&self) -> Result<Option<FoldedProof>> {
+        self.request_snapshot().wait()
+    }
+
+    /// Whether this backend folds in the background at all.
+    pub fn is_incremental(&self) -> bool {
         #[cfg(feature = "ragu")]
-        if let Some(folder) = &self.folder {
-            return folder.snapshot();
+        {
+            self.folder.is_some()
+        }
+        #[cfg(not(feature = "ragu"))]
+        {
+            false
+        }
+    }
+
+    /// Asks for the proof of everything pushed so far without waiting for it.
+    /// Steps pushed later are not part of it.
+    pub fn request_snapshot(&self) -> SnapshotHandle {
+        SnapshotHandle {
+            #[cfg(feature = "ragu")]
+            pending: self.folder.as_ref().map(|f| f.request_snapshot()),
+        }
+    }
+}
+
+/// A requested [`IncrementalFold`] snapshot.
+pub struct SnapshotHandle {
+    #[cfg(feature = "ragu")]
+    pending: Option<ragu_backend::PendingSnapshot>,
+}
+
+impl SnapshotHandle {
+    /// Blocks until the proof is ready. `None` as for [`IncrementalFold::snapshot`].
+    pub fn wait(self) -> Result<Option<FoldedProof>> {
+        #[cfg(feature = "ragu")]
+        if let Some(pending) = self.pending {
+            return pending.wait();
         }
         Ok(None)
+    }
+
+    /// The result if it is ready, or `None` while folding is still in progress.
+    pub fn try_take(&mut self) -> Option<Result<Option<FoldedProof>>> {
+        #[cfg(feature = "ragu")]
+        if let Some(pending) = self.pending.as_mut() {
+            return pending.try_take();
+        }
+        Some(Ok(None))
     }
 }
 

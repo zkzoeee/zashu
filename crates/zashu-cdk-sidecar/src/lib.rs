@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::{Arc, RwLock};
 
@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zashu_acc::NullifierAccumulator;
 use zashu_circuits::mode_a::{
-    fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step,
+    fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step, IncrementalFold, SnapshotHandle,
 };
 use zashu_circuits::FoldedProof;
 use zashu_core::field::canonical_fp_bytes;
@@ -154,6 +154,20 @@ pub struct EpochFolder {
     reserves: Vec<ReserveConfig>,
     history: HashMap<u64, SolvencyBundle>,
     latest_epoch: u64,
+    /// The first state this sidecar saw; background-folded proofs span from it.
+    genesis_state: MintState,
+    /// Folds steps on a worker thread when the backend supports it.
+    incremental: IncrementalFold,
+    /// Epochs whose steps are queued but whose proof is not ready yet, oldest first.
+    pending: VecDeque<PendingEpoch>,
+}
+
+/// An epoch that has been sealed and queued for folding.
+struct PendingEpoch {
+    start_state: MintState,
+    state: MintState,
+    step_proofs: Vec<FoldedProof>,
+    snapshot: Option<SnapshotHandle>,
 }
 
 impl EpochFolder {
@@ -171,11 +185,15 @@ impl EpochFolder {
             mint_sk,
             mint_id,
             genesis_state_hash,
-            current_state: genesis,
+            current_state: genesis.clone(),
             nf_acc,
             reserves,
             history: HashMap::new(),
             latest_epoch: 0,
+            genesis_state: genesis,
+            incremental: IncrementalFold::from_env()
+                .expect("invalid ZASHU_PCD_BACKEND or backend not compiled in"),
+            pending: VecDeque::new(),
         }
     }
 
@@ -183,7 +201,50 @@ impl EpochFolder {
         self.mint_id
     }
 
+    /// Seals an epoch and returns its solvency bundle, waiting for the proof.
     pub fn seal_epoch(&mut self, events: &[MintEvent]) -> Result<SolvencyBundle> {
+        let epoch = self.begin_epoch(events)?;
+        self.complete_pending(true)?;
+        self.history.get(&epoch).cloned().ok_or(SidecarError::NoBundle)
+    }
+
+    /// Publishes the bundle of every queued epoch whose proof is ready, in
+    /// order. Returns how many were published. Never blocks on proving.
+    pub fn poll_epochs(&mut self) -> Result<usize> {
+        self.complete_pending(false)
+    }
+
+    /// Epochs sealed with [`begin_epoch`](Self::begin_epoch) that are still being folded.
+    pub fn pending_epochs(&self) -> usize {
+        self.pending.len()
+    }
+
+    fn complete_pending(&mut self, wait: bool) -> Result<usize> {
+        let mut done = 0;
+        while let Some(mut epoch) = self.pending.pop_front() {
+            let snapshot = if wait {
+                epoch.snapshot.take().expect("snapshot requested when the epoch was queued").wait()
+            } else {
+                match epoch.snapshot.as_mut().expect("snapshot requested when the epoch was queued").try_take() {
+                    Some(result) => result,
+                    None => {
+                        self.pending.push_front(epoch);
+                        break;
+                    }
+                }
+            };
+            let bundle = self.build_bundle(&epoch, snapshot?)?;
+            self.latest_epoch = epoch.state.epoch;
+            self.history.insert(self.latest_epoch, bundle);
+            done += 1;
+        }
+        Ok(done)
+    }
+
+    /// Applies an epoch's events and queues its proof, returning the epoch
+    /// number at once. With a background-folding backend the bundle appears
+    /// (see [`poll_epochs`](Self::poll_epochs)) once the worker has caught up.
+    pub fn begin_epoch(&mut self, events: &[MintEvent]) -> Result<u64> {
         let start_state = self.current_state.clone();
         let mut step_proofs: Vec<FoldedProof> = Vec::with_capacity(events.len() + 1);
         let mut state = start_state.clone();
@@ -243,8 +304,32 @@ impl EpochFolder {
         self.nf_acc.seal_epoch();
         self.nf_acc.prune_before_epoch(8);
 
-        let folded = fold_mode_a_batch(&start_state, &state, &step_proofs)?;
-        let challenge = compute_reserves_challenge(&self.mint_id, &state);
+        for step in &step_proofs {
+            self.incremental.push(step);
+        }
+        let epoch = state.epoch;
+        self.pending.push_back(PendingEpoch {
+            start_state,
+            state: state.clone(),
+            step_proofs,
+            snapshot: Some(self.incremental.request_snapshot()),
+        });
+        self.current_state = state;
+        Ok(epoch)
+    }
+
+    fn build_bundle(&self, epoch: &PendingEpoch, snapshot: Option<FoldedProof>) -> Result<SolvencyBundle> {
+        let state = &epoch.state;
+        // A background-folded proof spans from this sidecar's first state; a
+        // batch fold covers just this epoch.
+        let (proof_start, folded) = match snapshot {
+            Some(folded) => (self.genesis_state.clone(), folded),
+            None => (
+                epoch.start_state.clone(),
+                fold_mode_a_batch(&epoch.start_state, state, &epoch.step_proofs)?,
+            ),
+        };
+        let challenge = compute_reserves_challenge(&self.mint_id, state);
         let utxos = self
             .reserves
             .iter()
@@ -256,21 +341,16 @@ impl EpochFolder {
         let msg = Message::from_digest(state.state_hash());
         let sig = secp.sign_schnorr_no_aux_rand(&msg, &kp);
 
-        let bundle = SolvencyBundle {
+        let _ = self.genesis_state_hash;
+        Ok(SolvencyBundle {
             version: "NUTZ-1".to_string(),
             mint_id: self.mint_id,
-            genesis_state_hash: start_state.state_hash(),
+            genesis_state_hash: proof_start.state_hash(),
             state: state.clone(),
             pcd_proof: folded.to_base64()?,
             reserves: ReservesAttestation { challenge, utxos },
             mint_signature: hex::encode(sig.serialize()),
-        };
-
-        self.latest_epoch = state.epoch;
-        self.current_state = state;
-        self.history.insert(self.latest_epoch, bundle.clone());
-        let _ = self.genesis_state_hash;
-        Ok(bundle)
+        })
     }
 
     pub fn latest_bundle(&self) -> Option<&SolvencyBundle> {

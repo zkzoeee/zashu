@@ -113,3 +113,46 @@ async fn mode_a_e2e_http_and_tamper_rejection() {
     );
     assert!(verify_solvency_bundle(&fetched, &low_provider).is_err());
 }
+
+/// Epochs can be sealed without waiting for their proofs; bundles are
+/// published in order as the background folder catches up.
+#[test]
+fn epochs_are_folded_in_the_background() {
+    use bitcoin::secp256k1::SecretKey;
+    use zashu_auditor::verify_solvency_bundle;
+    use zashu_cdk_sidecar::{EpochFolder, MintEvent, ReserveConfig};
+    use zashu_core::reserves::MockUtxoProvider;
+
+    let mint_sk = SecretKey::from_slice(&[7u8; 32]).unwrap();
+    let res_sk = SecretKey::from_slice(&[8u8; 32]).unwrap();
+    let txid = "ab".repeat(32);
+    let mut folder = EpochFolder::new(
+        mint_sk,
+        vec![ReserveConfig { secret_key: res_sk, txid: txid.clone(), vout: 0, value_sats: 1_000_000 }],
+    );
+
+    let e1 = folder.begin_epoch(&[MintEvent::Mint { amount: 5_000, quote_hash: [1u8; 32] }]).unwrap();
+    let e2 = folder
+        .begin_epoch(&[MintEvent::Swap { input_nullifiers: vec![[4u8; 32]], sum_in: 100, sum_out: 100 }])
+        .unwrap();
+    assert_eq!((e1, e2), (1, 2));
+
+    // Wait for both without blocking inside the sidecar.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(600);
+    while folder.pending_epochs() > 0 {
+        folder.poll_epochs().unwrap();
+        assert!(std::time::Instant::now() < deadline, "background fold did not finish");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+
+    let mut provider = MockUtxoProvider::new();
+    let b2 = folder.latest_bundle().unwrap().clone();
+    let b1 = folder.bundle_at_epoch(1).unwrap().clone();
+    assert_eq!(b2.state.epoch, 2);
+    for b in [&b1, &b2] {
+        for u in &b.reserves.utxos {
+            provider.insert(u.txid.clone(), u.vout, u.value_sats, u.script_pubkey.clone());
+        }
+        assert!(verify_solvency_bundle(b, &provider).unwrap().solvent);
+    }
+}
