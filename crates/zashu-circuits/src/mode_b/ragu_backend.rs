@@ -7,9 +7,8 @@
 //!
 //! ```text
 //!  PathStart -> PathExtend x3 --\
-//!                                 Spend<predicate> --\
-//!  Key --------------------------/                    Merge -> ... -> Finalize
-//!  Output -------------------------------------------/
+//!                                 Spend<predicate> -- Merge -> ... -> Close
+//!  Key --------------------------/
 //! ```
 //!
 //! * `PathStart` / `PathExtend`: 8 levels each of the note accumulator's
@@ -18,9 +17,12 @@
 //! * `Spend*`: one step circuit per predicate. Opens the note commitment the
 //!   path starts from, derives its nullifier, and enforces that predicate
 //!   against the key proof.
-//! * `Output`: opens an output note commitment and range-checks its value.
 //! * `Merge`: combines two parts; anchors and epochs must agree, balances add.
-//! * `Finalize`: turns the last part into the transaction statement.
+//! * `Close`: opens the last one or two output note commitments, range-checks
+//!   their values and turns the part into the transaction statement.
+//!   `CloseSeed` does the same for a transaction with no spends, which is
+//!   then a single step.
+//! * `Output`: an output as a part of its own, for a third output and beyond.
 //!
 //! The verifier only ever sees the rerandomized, compressed transaction proof
 //! and its header `[anchor, epoch, digest, balance]`. Which `Spend*` circuits
@@ -692,7 +694,7 @@ impl Step<Pasta> for SpendMultisig {
 }
 
 // --------------------------------------------------------------------------
-// Output, merge, finalize
+// Output, merge, close
 // --------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
@@ -706,6 +708,44 @@ pub(crate) struct OutputWitness {
     /// Passed through so the part can merge with the spends.
     anchor: Fp,
     epoch: u64,
+}
+
+/// Opens an output note: its digest leaf `Poseidon2(TAG_OUTPUT, cm)` and its
+/// range-checked value.
+fn open_output<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    allocator: &mut impl Allocator<'dr, D>,
+    w: &DriverValue<D, OutputWitness>,
+) -> ragu::Result<(Element<'dr, D>, Element<'dr, D>)> {
+    let value = alloc_u64(dr, allocator, w.as_ref().map(|w| w.value))?;
+    let owner = Element::alloc(dr, allocator, w.as_ref().map(|w| w.owner))?;
+    let predicate_id = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.predicate_id)))?;
+    let params = Element::alloc(dr, allocator, w.as_ref().map(|w| w.params))?;
+    let rho = Element::alloc(dr, allocator, w.as_ref().map(|w| w.rho))?;
+    let r = Element::alloc(dr, allocator, w.as_ref().map(|w| w.r))?;
+
+    let domain_note = constant(dr, DOMAIN_NOTE);
+    let cm = poseidon_hash(dr, &[domain_note, value.clone(), owner, predicate_id, params, rho, r])?;
+    let tag = constant(dr, TAG_OUTPUT);
+    Ok((poseidon_hash(dr, &[tag, cm])?, value))
+}
+
+/// Appends an optional output to a running `(digest, balance)`.
+fn add_output<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    allocator: &mut impl Allocator<'dr, D>,
+    digest: &Element<'dr, D>,
+    balance: &Element<'dr, D>,
+    w: &DriverValue<D, OutputWitness>,
+    on: DriverValue<D, bool>,
+) -> ragu::Result<(Element<'dr, D>, Element<'dr, D>)> {
+    let on = Boolean::alloc(dr, allocator, on)?;
+    let (leaf, value) = open_output(dr, allocator, w)?;
+    let tag = constant(dr, TAG_NODE);
+    let node = poseidon_hash(dr, &[tag, digest.clone(), leaf])?;
+    let digest = on.conditional_select(dr, digest, &node)?;
+    let spent = on.element().mul(dr, &value)?;
+    Ok((digest, balance.sub(dr, &spent)))
 }
 
 pub(crate) struct OutputStep;
@@ -730,19 +770,9 @@ impl Step<Pasta> for OutputStep {
         Self: 'dr,
     {
         let allocator = &mut Standard::new();
-        let value = alloc_u64(dr, allocator, w.as_ref().map(|w| w.value))?;
-        let owner = Element::alloc(dr, allocator, w.as_ref().map(|w| w.owner))?;
-        let predicate_id = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.predicate_id)))?;
-        let params = Element::alloc(dr, allocator, w.as_ref().map(|w| w.params))?;
-        let rho = Element::alloc(dr, allocator, w.as_ref().map(|w| w.rho))?;
-        let r = Element::alloc(dr, allocator, w.as_ref().map(|w| w.r))?;
+        let (digest, value) = open_output(dr, allocator, &w)?;
         let anchor = Element::alloc(dr, allocator, w.as_ref().map(|w| w.anchor))?;
         let epoch = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.epoch)))?;
-
-        let domain_note = constant(dr, DOMAIN_NOTE);
-        let cm = poseidon_hash(dr, &[domain_note, value.clone(), owner, predicate_id, params, rho, r])?;
-        let tag = constant(dr, TAG_OUTPUT);
-        let digest = poseidon_hash(dr, &[tag, cm])?;
         let balance = value.negate(dr);
 
         let out: V<'dr, D, 4> = FixedVec::new(vec![anchor, epoch, digest, balance])?;
@@ -790,13 +820,25 @@ impl Step<Pasta> for MergeStep {
     }
 }
 
-/// Re-labels a finished part as a transaction. Every published proof is a
-/// `Finalize` proof, so its circuit identity says nothing about the spends.
-pub(crate) struct FinalizeStep;
+/// Outputs a closing step can add.
+const CLOSE_OUTPUTS: usize = 2;
 
-impl Step<Pasta> for FinalizeStep {
+/// The last (up to two) outputs of a transaction; unused slots are off.
+#[derive(Clone, Copy)]
+pub(crate) struct CloseWitness {
+    outputs: [OutputWitness; CLOSE_OUTPUTS],
+    on: [bool; CLOSE_OUTPUTS],
+}
+
+/// Closes a transaction that has spends or earlier outputs: appends up to two
+/// outputs to the part and labels the result a transaction. Every published
+/// proof ends in a closing step, so its circuit identity says nothing about
+/// which spend circuits ran.
+pub(crate) struct CloseStep;
+
+impl Step<Pasta> for CloseStep {
     const INDEX: Index = Index::new(20);
-    type Witness<'source> = ();
+    type Witness<'source> = CloseWitness;
     type Aux<'source> = ();
     type Left = Part;
     type Right = ();
@@ -806,7 +848,7 @@ impl Step<Pasta> for FinalizeStep {
         &self,
         dr: &mut D,
         _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
-        _: DriverValue<D, ()>,
+        w: DriverValue<D, CloseWitness>,
         left: DriverValue<D, [Fp; 4]>,
         _: DriverValue<D, ()>,
     ) -> StepOut<'dr, D, Self, HS>
@@ -816,9 +858,56 @@ impl Step<Pasta> for FinalizeStep {
         let allocator = &mut Standard::new();
         let left = Encoded::new(dr, allocator, left)?;
         let l: &V<'dr, D, 4> = left.as_gadget();
-        let out: V<'dr, D, 4> = FixedVec::new(l.iter().cloned().collect())?;
+        let (mut digest, mut balance) = (l[DIGEST].clone(), l[BALANCE].clone());
+        for i in 0..CLOSE_OUTPUTS {
+            let output = w.as_ref().map(|w| w.outputs[i]);
+            let on = w.as_ref().map(|w| w.on[i]);
+            (digest, balance) = add_output(dr, allocator, &digest, &balance, &output, on)?;
+        }
+        let out: V<'dr, D, 4> = FixedVec::new(vec![l[ANCHOR].clone(), l[EPOCH].clone(), digest, balance])?;
         let data = values_of(&out);
         Ok(((left, Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
+    }
+}
+
+/// A whole transaction with no spends and one or two outputs (a shielded
+/// mint), in a single step. The anchor and epoch come from the first output's
+/// witness, as they do for [`OutputStep`].
+pub(crate) struct CloseSeed;
+
+impl Step<Pasta> for CloseSeed {
+    const INDEX: Index = Index::new(26);
+    type Witness<'source> = CloseWitness;
+    type Aux<'source> = ();
+    type Left = ();
+    type Right = ();
+    type Output = Tx;
+
+    fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
+        &self,
+        dr: &mut D,
+        _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
+        w: DriverValue<D, CloseWitness>,
+        _: DriverValue<D, ()>,
+        _: DriverValue<D, ()>,
+    ) -> StepOut<'dr, D, Self, HS>
+    where
+        Self: 'dr,
+    {
+        let allocator = &mut Standard::new();
+        let first = w.as_ref().map(|w| w.outputs[0]);
+        let (mut digest, value) = open_output(dr, allocator, &first)?;
+        let mut balance = value.negate(dr);
+        let anchor = Element::alloc(dr, allocator, first.as_ref().map(|w| w.anchor))?;
+        let epoch = Element::alloc(dr, allocator, first.as_ref().map(|w| Fp::from(w.epoch)))?;
+        for i in 1..CLOSE_OUTPUTS {
+            let output = w.as_ref().map(|w| w.outputs[i]);
+            let on = w.as_ref().map(|w| w.on[i]);
+            (digest, balance) = add_output(dr, allocator, &digest, &balance, &output, on)?;
+        }
+        let out: V<'dr, D, 4> = FixedVec::new(vec![anchor, epoch, digest, balance])?;
+        let data = values_of(&out);
+        Ok(((Encoded::from_gadget(()), Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
     }
 }
 
@@ -954,8 +1043,10 @@ fn prove_spend(app: &App, epoch: u64, input: &SpendInput<'_>) -> Result<Pcd<Past
     }
     let plan = plan_spend(note, input.predicate)?;
     let w = spend_witness(note, epoch, plan.lock, plan.a, plan.b);
-    let path = prove_path(app, &note.commitment(), input.witness)?;
-    let key = prove_key(app, &plan.sk)?;
+    // The path and the key proof are independent; prove them side by side.
+    let (path, key) =
+        rayon::join(|| prove_path(app, &note.commitment(), input.witness), || prove_key(app, &plan.sk));
+    let (path, key) = (path?, key?);
     let rng = &mut rng();
     let part = match plan.kind {
         SpendKind::Standard => app.fuse(rng, SpendStandard, w, path, key).map(|p| p.0),
@@ -1026,9 +1117,9 @@ fn prove_multisig_spend(
     app.fuse(rng, SpendMultisig, w, path, set).map(|p| p.0).map_err(|e| ragu_err("multisig spend", e))
 }
 
-fn prove_output(app: &App, anchor: Fp, epoch: u64, note: &Note) -> Result<Pcd<Pasta, Rank, Part>> {
+fn output_witness(anchor: Fp, epoch: u64, note: &Note) -> OutputWitness {
     let (rho, r) = note_rho_r_fields(&note.rho, &note.r);
-    let w = OutputWitness {
+    OutputWitness {
         value: note.value,
         owner: fp_from_pasta(&pk_to_fp(&note.owner_pk)),
         predicate_id: note.predicate_id as u64,
@@ -1037,8 +1128,26 @@ fn prove_output(app: &App, anchor: Fp, epoch: u64, note: &Note) -> Result<Pcd<Pa
         r: fp_from_pasta(&r),
         anchor,
         epoch,
-    };
-    app.seed(&mut rng(), OutputStep, w).map(|p| p.0).map_err(|e| ragu_err("output", e))
+    }
+}
+
+fn prove_output(app: &App, anchor: Fp, epoch: u64, note: &Note) -> Result<Pcd<Pasta, Rank, Part>> {
+    app.seed(&mut rng(), OutputStep, output_witness(anchor, epoch, note))
+        .map(|p| p.0)
+        .map_err(|e| ragu_err("output", e))
+}
+
+/// The closing step's witness for the transaction's last outputs.
+fn close_witness(anchor: Fp, epoch: u64, last: &[&Note]) -> CloseWitness {
+    let zero = Fp::from(0u64);
+    let unused =
+        OutputWitness { value: 0, owner: zero, predicate_id: 0, params: zero, rho: zero, r: zero, anchor, epoch };
+    let mut w = CloseWitness { outputs: [unused; CLOSE_OUTPUTS], on: [false; CLOSE_OUTPUTS] };
+    for (i, note) in last.iter().enumerate() {
+        w.outputs[i] = output_witness(anchor, epoch, note);
+        w.on[i] = true;
+    }
+    w
 }
 
 /// Proves a shielded transaction: `inputs` are spent against `anchor_root`
@@ -1089,17 +1198,25 @@ pub fn prove_tx_unchecked(
         });
         Ok(())
     };
-    for input in inputs {
-        push(prove_spend(app, epoch, input)?)?;
+    // Spends are independent of each other until they are merged.
+    use rayon::prelude::*;
+    let spends: Vec<_> = inputs.par_iter().map(|input| prove_spend(app, epoch, input)).collect();
+    for spend in spends {
+        push(spend?)?;
     }
-    for note in outputs {
+    // The closing step takes the last two outputs; any before them are
+    // proven and merged one by one.
+    let (early, last) = outputs.split_at(outputs.len().saturating_sub(CLOSE_OUTPUTS));
+    for note in early {
         push(prove_output(app, anchor, epoch, note)?)?;
     }
-    let root = acc.expect("at least one part");
-    let tx = app
-        .fuse(&mut rng(), FinalizeStep, (), root, unit(app))
-        .map_err(|e| ragu_err("finalize", e))?
-        .0;
+    let close = close_witness(anchor, epoch, last);
+    let tx = match acc {
+        Some(root) => app.fuse(&mut rng(), CloseStep, close, root, unit(app)).map(|p| p.0),
+        // Outputs only: the whole transaction is one step.
+        None => app.seed(&mut rng(), CloseSeed, close).map(|p| p.0),
+    };
+    let tx = tx.map_err(|e| ragu_err("close", e))?;
     // A Ragu proof, compressed or not, is not hiding by itself: its openings
     // are evaluations of witness polynomials, and a fuse stores what it reads
     // of its children. Ragu's `rerandomize` (two more fuses) is what it

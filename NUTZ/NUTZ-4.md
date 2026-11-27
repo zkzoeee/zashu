@@ -33,7 +33,7 @@ A spend does not fit in one Ragu step, so a transaction is a small tree of steps
 2. **Key**: knowledge of `sk`, exposing `K([sk]G)`.
 3. **Spend** (one circuit per predicate and branch): opens the note commitment, derives the nullifier, and enforces the predicate against the key proof. For `Multisig`, up to three key proofs are first gathered into a key set; the spend checks each is a distinct member of the committed list and that there are at least $t$.
 4. **Output**: opens each output commitment and range-checks its value.
-5. **Merge / Finalize**: anchors and epochs must agree and values add up; the final statement is `[anchor, epoch, digest, balance]`.
+5. **Merge / Close**: anchors and epochs must agree and values add up; the final statement is `[anchor, epoch, digest, balance]`.
 
 `digest` commits to the ordered nullifiers and output commitments and is recomputed by the mint. `balance` is `sum(inputs) - sum(outputs)`: zero for a swap, the public amount for a melt, its negation for a mint. The transaction proof is rerandomized before it is published, and the mint sees only that proof, so which spend circuits ran stays inside the recursion. This relies on Ragu's rerandomization, whose indistinguishability Ragu documents as a design goal that is not yet proven; predicate privacy is best-effort until it is. What is checked here: published proofs for all five predicates have the same length, the same envelope and circuit index, and the same public-input shape (`published_proofs_have_the_same_shape_for_every_predicate`).
 

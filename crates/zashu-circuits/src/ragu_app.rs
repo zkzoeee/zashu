@@ -48,13 +48,15 @@ pub(crate) fn build() -> ragu::Result<WalletApp> {
         .register(b::SpendHtlcRefund)?
         .register(b::OutputStep)?
         .register(b::MergeStep)?
-        .register(b::FinalizeStep)?
+        .register(b::CloseStep)?
         .register(b::KeysStart::<false>)?
         .register(b::KeysStart::<true>)?
         .register(b::KeysExtend)?
         .register(b::SpendMultisig)?
         // Mode A fold, continued: index 25
         .register(a::PairJoin)?
+        // Mode B, continued: index 26
+        .register(b::CloseSeed)?
         .finalize(pasta)
 }
 

@@ -21,18 +21,19 @@ Measured with `cargo run --release -p zashu-circuits --example bench_backends` o
 | solvency fold, 1 step | 55 ms | 859 ms | 16x | 1.8 ms | 68.9 ms | 3,360 B | 6,208 B |
 | solvency fold, 16 steps | 72 ms | 16,588 ms | 230x | 1.8 ms | 68.1 ms | 3,360 B | 6,208 B |
 | solvency fold, 64 steps | 116 ms | 67,400 ms | 582x | 1.8 ms | 68.8 ms | 3,360 B | 6,208 B |
-| shielded mint (1 output) | 63 ms | 2,373 ms | 38x | 1.8 ms | 69.3 ms | 4,032 B | 6,208 B |
-| shielded swap, 1 in / 2 out | 737 ms | 7,322 ms | 10x | 12.8 ms | 72.5 ms | 4,384 B | 6,208 B |
-| shielded swap, 2 in / 2 out | 730 ms | 10,791 ms | 15x | 12.9 ms | 70.8 ms | 4,384 B | 6,208 B |
-| HTLC claim, 1 in / 1 out | 742 ms | 6,509 ms | 9x | 12.9 ms | 71.1 ms | 4,384 B | 6,208 B |
-| shielded melt, 1 in + change | 738 ms | 6,010 ms | 8x | 13.3 ms | 69.0 ms | 4,384 B | 6,208 B |
+| shielded mint (1 output) | 65 ms | 1,960 ms | 30x | 1.7 ms | 84.4 ms | 4,032 B | 6,208 B |
+| shielded swap, 1 in / 2 out | 737 ms | 4,865 ms | 7x | 12.2 ms | 81.8 ms | 4,384 B | 6,208 B |
+| shielded swap, 2 in / 2 out | 739 ms | 7,010 ms | 9x | 13.4 ms | 81.7 ms | 4,384 B | 6,208 B |
+| HTLC claim, 1 in / 1 out | 731 ms | 4,809 ms | 7x | 13.4 ms | 96.2 ms | 4,384 B | 6,208 B |
+| shielded melt, 1 in + change | 713 ms | 4,763 ms | 7x | 13.3 ms | 82.1 ms | 4,384 B | 6,208 B |
 
 How to read it:
 
 * **The backends do not prove the same thing.** The Halo 2 fold proves only the endpoints and its transaction proofs do not bind note openings, nullifiers or predicates. Ragu re-proves and recursively verifies everything, which is where the time goes.
 * **The fold rows exclude the per-request Halo 2 step proofs** (about 57 ms each), which both backends still produce. Ragu's fold costs about 1.05 s per step, linear in the number of steps. The mint pays it in the background as steps happen, not in the solvency call.
-* **Ragu transaction time grows with inputs** (each input adds four Merkle-path steps, a key step and a spend step); Halo 2's is flat because one fixed circuit covers up to four inputs.
-* **Ragu verification and proof size are constant** (about 70 ms, 6,208 bytes) for every workload.
+* **Ragu transaction time grows with inputs** (each input adds four Merkle-path steps, a key step and a spend step); Halo 2's is flat because one fixed circuit covers up to four inputs. A transaction's last two outputs and its final statement are one closing step, and a mint is that step alone; inputs are proven in parallel. Before that the five transaction rows were 2.4 s, 7.3 s, 10.8 s, 6.5 s and 6.0 s.
+* The transaction rows were re-measured (`bench_backends --tx-only`) on a machine busy with other work, which is why their verify times read 10 to 25 ms higher than the fold rows; the fold rows are from the earlier run.
+* **Ragu verification and proof size are constant** (70 to 85 ms, 6,208 bytes) for every workload.
 * One-time setup per process: about 14 s of Halo 2 key generation across all circuits in this run, and about 1.5 s per Ragu application.
 * An uncompressed, still-foldable Ragu proof is about 34 MB; only the compressed root is small.
 * Proving leaves in parallel (`ZASHU_RAGU_PARALLEL=4`) was about 1.3x faster in the best run and several times slower at 8, so batch folding is sequential by default.

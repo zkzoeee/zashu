@@ -268,8 +268,11 @@ fn main() {
         bound_fold_ops();
         return;
     }
-    let halo2 = run(FoldBackend::Halo2, "halo2", &[1, 16, 64]);
-    let ragu = run(FoldBackend::Ragu, "ragu", &[1, 16, 64]);
+    // `--tx-only` skips the solvency-fold rows, which dominate the run time.
+    let tx_only = std::env::args().any(|a| a == "--tx-only");
+    let folds: &[usize] = if tx_only { &[] } else { &[1, 16, 64] };
+    let halo2 = run(FoldBackend::Halo2, "halo2", folds);
+    let ragu = run(FoldBackend::Ragu, "ragu", folds);
 
     println!("| Workload | Halo 2 prove | Ragu prove | Slowdown | Halo 2 verify | Ragu verify | Halo 2 proof | Ragu proof |");
     println!("| :--- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |");
@@ -287,5 +290,7 @@ fn main() {
             r.proof_bytes
         );
     }
-    bound_fold_ops();
+    if !tx_only {
+        bound_fold_ops();
+    }
 }
