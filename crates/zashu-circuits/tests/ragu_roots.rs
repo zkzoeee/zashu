@@ -45,6 +45,20 @@ impl Mint {
         Self { state: genesis.clone(), genesis, notes, nfs, steps: Vec::new() }
     }
 
+    /// A mint whose trees already hold `notes` notes and `nullifiers` nullifiers.
+    fn prefilled(notes: u64, nullifiers: u64) -> Self {
+        let mut mint = Self::new();
+        for i in 0..notes {
+            mint.notes.insert(fe(1_000_000 + i)).unwrap();
+        }
+        for i in 0..nullifiers {
+            mint.nfs.insert(fe(2_000_000 + 7 * i)).unwrap();
+        }
+        mint.genesis = MintState::genesis(mint.nfs.root(), mint.notes.root());
+        mint.state = mint.genesis.clone();
+        mint
+    }
+
     /// Mint `amount` into one new note.
     fn mint(&mut self, amount: u64, quote: [u8; 32], cm: [u8; 32]) {
         let prev = self.state.clone();
@@ -244,6 +258,50 @@ fn nullifier_insert_must_respect_the_sorted_order() {
     mint.state.epoch += 1;
     mint.state.nullifier_acc_root = post_root;
     let step = prove_swap_step(&prev, &mint.state, 0, 0, &[]).unwrap().with_root_updates(vec![forged], Vec::new());
+    mint.steps.push(step);
+    assert!(mint.not_accepted());
+}
+
+#[test]
+fn paired_updates_join_wherever_their_paths_meet() {
+    // Notes 63 and 64 only share a path from level 7 up, so each climbs six
+    // levels on its own (more than one step) before the two are joined. The
+    // third output is proven on its own.
+    let mut mint = Mint::prefilled(63, 20);
+    assert_eq!(mint.notes.len(), 63);
+    // The nullifier lands at index 21 behind a low leaf somewhere below it.
+    mint.swap(&[fe(2_000_003)], &[fe(11), fe(12), fe(13)]);
+    // Leaves 66 and 67 are siblings; 68 and 69 meet one level up.
+    mint.swap(&[], &[fe(14), fe(15), fe(16)]);
+
+    let folded = mint.fold().unwrap();
+    verify_fold_batch(&folded, &mint.genesis.state_hash(), &mint.state).unwrap();
+    let mut wrong = mint.state.clone();
+    wrong.note_acc_root = mint.genesis.note_acc_root;
+    assert!(verify_fold_batch(&folded, &mint.genesis.state_hash(), &wrong).is_err());
+}
+
+#[test]
+fn a_pair_cannot_overwrite_an_existing_note() {
+    let mut mint = Mint::new();
+    mint.mint(500, [1u8; 32], fe(101));
+    let prev = mint.state.clone();
+
+    // An honest append at index 1, followed by an overwrite of index 0.
+    let honest = mint.notes.insert_recorded(fe(102)).unwrap();
+    let siblings = mint.notes.witness(0).unwrap().siblings;
+    let forged = LeafUpdate {
+        pre_root: honest.post_root,
+        post_root: root_from(fe(999), 0, &siblings),
+        leaf_index: 0,
+        old_leaf: fe(101),
+        new_leaf: fe(999),
+        siblings,
+    };
+    mint.state.epoch += 1;
+    mint.state.note_acc_root = forged.post_root;
+    let step =
+        prove_swap_step(&prev, &mint.state, 0, 0, &[]).unwrap().with_root_updates(Vec::new(), vec![honest, forged]);
     mint.steps.push(step);
     assert!(mint.not_accepted());
 }

@@ -26,7 +26,7 @@ pub(crate) type WalletApp = Application<'static, Pasta, Rank, HEADER_SIZE>;
 pub(crate) fn build() -> ragu::Result<WalletApp> {
     let pasta = ragu::pcd::pasta::baked();
     ApplicationBuilder::<Pasta, Rank, HEADER_SIZE>::new()
-        // Mode A fold: indices 0..=9
+        // Mode A fold: indices 0..=9 (and 25, below)
         .register(a::ValueMint)?
         .register(a::ValueSwap)?
         .register(a::ValueMelt)?
@@ -34,7 +34,7 @@ pub(crate) fn build() -> ragu::Result<WalletApp> {
         .register(a::UpdStart)?
         .register(a::UpdExtend)?
         .register(a::NoteInsert)?
-        .register(a::OrderStep)?
+        .register(a::PairStart)?
         .register(a::NfLow)?
         .register(a::NfInsert)?
         // Mode B transactions: indices 10..=24
@@ -53,6 +53,8 @@ pub(crate) fn build() -> ragu::Result<WalletApp> {
         .register(b::KeysStart::<true>)?
         .register(b::KeysExtend)?
         .register(b::SpendMultisig)?
+        // Mode A fold, continued: index 25
+        .register(a::PairJoin)?
         .finalize(pasta)
 }
 

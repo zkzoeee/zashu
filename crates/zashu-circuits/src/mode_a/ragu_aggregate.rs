@@ -298,13 +298,12 @@ macro_rules! declare_header {
     };
 }
 
-declare_header!(DeclareUpdate, 3, ragu_roots::Update, 6);
-declare_header!(DeclareOrder, 4, ragu_roots::Order, 3);
-declare_header!(DeclareNfMid, 5, ragu_roots::NfMid, 6);
-declare_header!(DeclarePath, 6, crate::mode_b::ragu_backend::Path, 3);
-declare_header!(DeclareKey, 7, crate::mode_b::ragu_backend::Key, 1);
-declare_header!(DeclarePart, 8, crate::mode_b::ragu_backend::Part, 4);
-declare_header!(DeclareKeys, 9, crate::mode_b::ragu_backend::Keys, 3);
+declare_header!(DeclareUpdate, 3, ragu_roots::Update, 7);
+declare_header!(DeclareNfMid, 4, ragu_roots::NfMid, 6);
+declare_header!(DeclarePath, 5, crate::mode_b::ragu_backend::Path, 3);
+declare_header!(DeclareKey, 6, crate::mode_b::ragu_backend::Key, 1);
+declare_header!(DeclarePart, 7, crate::mode_b::ragu_backend::Part, 4);
+declare_header!(DeclareKeys, 8, crate::mode_b::ragu_backend::Keys, 3);
 
 fn rng() -> UnwrapErr<SysRng> {
     UnwrapErr(SysRng)
@@ -320,7 +319,6 @@ fn build() -> ragu::Result<AggApp> {
         .register(OpPlain)?
         .register(AggFold)?
         .register(DeclareUpdate)?
-        .register(DeclareOrder)?
         .register(DeclareNfMid)?
         .register(DeclarePath)?
         .register(DeclareKey)?

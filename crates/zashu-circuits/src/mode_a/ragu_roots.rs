@@ -9,23 +9,30 @@
 //! ```text
 //!  Value(mint | melt | swap)      epoch, liabilities and event log
 //!  NfInsert   x nullifiers        nullifier root, one indexed-tree insert each
-//!  NoteInsert x outputs           note root, one append each
+//!  NoteInsert x outputs           note root, one or two appends each
 //! ```
 //!
 //! * **Value** steps require both roots to stay put, and a mint or melt must
 //!   extend the event log with `Poseidon4(log, DOMAIN, quote, amount)` where
 //!   `amount` is exactly the change in liabilities. A swap leaves it alone.
 //! * **NoteInsert** proves the note root changed by writing a commitment into
-//!   a previously empty leaf: an `Update` chain (8 steps of 4 levels) walks the
+//!   a previously empty leaf: an `Update` chain (4 levels a step) walks the
 //!   old and the new leaf up the same siblings to the old and the new root.
-//! * **NfInsert** proves a sorted indexed-Merkle-tree insertion: an `Order`
-//!   step checks `low.val < nf < low.next_val` (or `low` is the last leaf), one
-//!   `Update` chain re-points the low leaf at `nf`, and a second one appends
-//!   the new leaf into an empty slot. Nullifiers can only ever be added.
+//! * **NfInsert** proves a sorted indexed-Merkle-tree insertion: `NfLow`
+//!   checks `low.val < nf < low.next_val` (or `low` is the last leaf) and that
+//!   the low leaf was re-pointed at `nf`, and `NfInsert` that the new leaf was
+//!   appended into an empty slot. Nullifiers can only ever be added.
 //!
-//! All of these are `Transition`s, fused with the same recursive `FoldStep`,
-//! so the published proof attests an unbroken chain of them from the genesis
-//! state to the current one.
+//! Two leaves changed together are an `Update` *pair*: each climbs on its own
+//! only to the level where their paths meet (`PairStart` when that is within
+//! two levels, `PairJoin` otherwise), and the shared path above is walked
+//! once. A nullifier insert is always a pair (low leaf and appended leaf);
+//! note outputs are paired two at a time.
+//!
+//! The value step starts an operation's `Transition` and every insert step
+//! extends it, checking it continues from the state the transition ends at.
+//! Operations are fused with the recursive `FoldStep`, so the published proof
+//! attests an unbroken chain from the genesis state to the current one.
 //!
 //! Not covered: that the inserted nullifiers and notes are the ones the
 //! operation's Mode B proof (or BDHKE spend) authorised, and that the amounts
@@ -41,7 +48,7 @@ use ragu::primitives::allocator::{Allocator, Standard};
 use ragu::primitives::vec::{ConstLen, FixedVec};
 use ragu::primitives::{decompose, decompose_n, multiadd, Boolean, Element};
 use ragu::step::{Encoded, Index, Oracles, Step};
-use ragu::{Coeff, Pcd};
+use ragu::Pcd;
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use zashu_acc::{LeafUpdate, NullifierTransitionWitness, ACC_DEPTH};
@@ -53,17 +60,19 @@ use zashu_core::types::MintState;
 
 use super::ragu_backend::{
     finish_with, ragu_err, verify_with, BackgroundFolder, FoldStep, FolderOps, Payload, Rank, Running,
-    StateFields, StepKind, Transition, TransitionPcd,
+    StateFields, StepKind, Transition, TransitionPcd, ANCHOR, COUNT, DIGEST, END_LIAB, END_STATE, PAYLOAD,
+    START_LIAB, START_STATE,
 };
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, StateTransition, SubcircuitId};
-use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of, TAG_OUTPUT, TAG_SPEND};
+use crate::ragu_gadgets::{
+    fp_from_bytes, fp_from_pasta, poseidon_hash, values_of, TAG_NODE, TAG_OUTPUT, TAG_SPEND,
+};
 
 type App = crate::ragu_app::WalletApp;
 
 /// Merkle levels proven per update step (each level hashes twice: old and new).
 const UPD_LEVELS: usize = 4;
-const UPD_STEPS: usize = ACC_DEPTH / UPD_LEVELS;
 const _: () = assert!(ACC_DEPTH % UPD_LEVELS == 0 && ACC_DEPTH == 32);
 
 macro_rules! header {
@@ -90,19 +99,21 @@ macro_rules! header {
 
 // `Transition` (suffix 0) comes from `ragu_backend`.
 header!(
-    /// `[old_node, new_node, old_leaf, new_leaf, index, weight]`: changing the
-    /// leaf at `index` from `old_leaf` to `new_leaf` moves its ancestor
-    /// `log2(weight)` levels up from `old_node` to `new_node`.
-    Update, 1, 6
+    /// `[old_node, new_node, old_leaf, new_leaf, index, weight, pair]`:
+    /// changing the leaf at `index` from `old_leaf` to `new_leaf` moves its
+    /// ancestor `log2(weight)` levels up from `old_node` to `new_node`.
+    ///
+    /// `pair` is zero for a single leaf. Otherwise a second leaf, `delta` to
+    /// the right and previously empty, was filled with `b` in the same
+    /// update, and `pair = Poseidon2(b, delta)`.
+    Update, 1, 7
 );
+// Suffix 2 is unused.
 header!(
-    /// `[val, nf, next_val]` with `val < nf`, and `nf < next_val` unless
-    /// `next_val` is zero (no successor), in the accumulator's byte order.
-    Order, 2, 3
-);
-header!(
-    /// `[pre_root, mid_root, nf, next_val, next_idx, new_idx]`: the low leaf
-    /// was re-pointed at `nf`; the new leaf still has to be appended.
+    /// `[pre_root, post_root, nf, next_val, next_idx, appended]`: a sorted
+    /// insertion of `nf` moved the nullifier root from `pre_root` to
+    /// `post_root`, appending the leaf hash `appended`, which still has to be
+    /// checked against `(nf, next_val, next_idx)`.
     NfMid, 3, 6
 );
 
@@ -112,6 +123,7 @@ const U_OLD_LEAF: usize = 2;
 const U_NEW_LEAF: usize = 3;
 const U_INDEX: usize = 4;
 const U_WEIGHT: usize = 5;
+const U_PAIR: usize = 6;
 
 type V<'dr, D, const N: usize> = FixedVec<Element<'dr, D>, ConstLen<N>>;
 
@@ -309,48 +321,93 @@ value_step!(ValueMelt, 2, StepKind::Melt);
 // Merkle leaf updates
 // --------------------------------------------------------------------------
 
+/// Up to `N` Merkle levels of one climb. Inactive levels are skipped, so a
+/// step can stop at any height.
+#[derive(Clone, Copy)]
+pub(crate) struct Levels<const N: usize> {
+    siblings: [Fp; N],
+    /// Bit `i` set: the running node is the right child at level `i`.
+    bits: [bool; N],
+    active: [bool; N],
+}
+
+impl<const N: usize> Levels<N> {
+    /// The first `N` levels of `siblings`/`index` starting at `from`, clipped
+    /// to `until`; the rest are inactive.
+    fn of(u: &LeafUpdate, from: usize, until: usize) -> Result<Self> {
+        let mut out = Levels { siblings: [Fp::from(0u64); N], bits: [false; N], active: [false; N] };
+        for j in 0..N {
+            let level = from + j;
+            if level < until {
+                out.siblings[j] = tree_fp(&u.siblings[level])?;
+                out.bits[j] = (u.leaf_index >> level) & 1 == 1;
+                out.active[j] = true;
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// `(old, new, index, weight)`: a subtree root before and after the change,
+/// the changed leaf's index within that subtree and the subtree's leaf count.
+type Node<'dr, D> = (Element<'dr, D>, Element<'dr, D>, Element<'dr, D>, Element<'dr, D>);
+
+/// Walks the old and the new node up the active levels over shared siblings,
+/// accumulating the leaf index. `weight` is `2^levels_so_far`.
+fn climb<'dr, D: Driver<'dr, F = Fp>, const N: usize>(
+    dr: &mut D,
+    allocator: &mut impl Allocator<'dr, D>,
+    node: Node<'dr, D>,
+    w: &DriverValue<D, Levels<N>>,
+) -> ragu::Result<Node<'dr, D>> {
+    let (mut old, mut new, mut index, mut weight) = node;
+    for i in 0..N {
+        let sibling = Element::alloc(dr, allocator, w.as_ref().map(|w| w.siblings[i]))?;
+        let is_right = Boolean::alloc(dr, allocator, w.as_ref().map(|w| w.bits[i]))?;
+        let active = Boolean::alloc(dr, allocator, w.as_ref().map(|w| w.active[i]))?;
+
+        let left = is_right.conditional_select(dr, &old, &sibling)?;
+        let right = old.add(dr, &sibling).sub(dr, &left);
+        let up = acc_hash(dr, &left, &right)?;
+        old = active.conditional_select(dr, &old, &up)?;
+
+        let left = is_right.conditional_select(dr, &new, &sibling)?;
+        let right = new.add(dr, &sibling).sub(dr, &left);
+        let up = acc_hash(dr, &left, &right)?;
+        new = active.conditional_select(dr, &new, &up)?;
+
+        let counted = active.and(dr, &is_right)?;
+        let term = counted.element().mul(dr, &weight)?;
+        index = index.add(dr, &term);
+        let grow = active.element().mul(dr, &weight)?;
+        weight = weight.add(dr, &grow);
+    }
+    Ok((old, new, index, weight))
+}
+
+/// Joins two changed subtrees of equal size that are siblings, `a` on the
+/// left. The result is addressed by `a`'s leaf; `b`'s leaf (which must have
+/// been empty) is remembered as `pair = Poseidon2(b_new_leaf, b_index - a_index)`.
+fn join<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    a: Node<'dr, D>,
+    b: Node<'dr, D>,
+    b_new_leaf: &Element<'dr, D>,
+) -> ragu::Result<(Node<'dr, D>, Element<'dr, D>)> {
+    enforce_equal(dr, &a.3, &b.3)?;
+    let old = acc_hash(dr, &a.0, &b.0)?;
+    let new = acc_hash(dr, &a.1, &b.1)?;
+    let delta = b.2.add(dr, &a.3).sub(dr, &a.2);
+    let pair = poseidon_hash(dr, &[b_new_leaf.clone(), delta])?;
+    let weight = a.3.add(dr, &a.3);
+    Ok(((old, new, a.2, weight), pair))
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct UpdWitness {
     old_leaf: Fp,
     new_leaf: Fp,
-    siblings: [Fp; UPD_LEVELS],
-    /// Bit `i` set: the running node is the right child at level `i`.
-    bits: [bool; UPD_LEVELS],
-}
-
-/// Walks the old and the new node up [`UPD_LEVELS`] levels over shared
-/// siblings, accumulating the leaf index. `weight` is `2^levels_so_far`.
-#[allow(clippy::type_complexity)]
-fn climb<'dr, D: Driver<'dr, F = Fp>>(
-    dr: &mut D,
-    allocator: &mut impl Allocator<'dr, D>,
-    mut old: Element<'dr, D>,
-    mut new: Element<'dr, D>,
-    mut index: Element<'dr, D>,
-    weight: &Element<'dr, D>,
-    w: &DriverValue<D, UpdWitness>,
-) -> ragu::Result<(Element<'dr, D>, Element<'dr, D>, Element<'dr, D>)> {
-    for i in 0..UPD_LEVELS {
-        let sibling = Element::alloc(dr, allocator, w.as_ref().map(|w| w.siblings[i]))?;
-        let is_right = Boolean::alloc(dr, allocator, w.as_ref().map(|w| w.bits[i]))?;
-
-        let left = is_right.conditional_select(dr, &old, &sibling)?;
-        let right = old.add(dr, &sibling).sub(dr, &left);
-        old = acc_hash(dr, &left, &right)?;
-
-        let left = is_right.conditional_select(dr, &new, &sibling)?;
-        let right = new.add(dr, &sibling).sub(dr, &left);
-        new = acc_hash(dr, &left, &right)?;
-
-        let bit_weight = weight.scale(dr, Coeff::Arbitrary(Fp::from(1u64 << i)));
-        let term = is_right.element().mul(dr, &bit_weight)?;
-        index = index.add(dr, &term);
-    }
-    Ok((old, new, index))
-}
-
-fn next_weight<'dr, D: Driver<'dr, F = Fp>>(dr: &mut D, weight: &Element<'dr, D>) -> Element<'dr, D> {
-    weight.scale(dr, Coeff::Arbitrary(Fp::from(1u64 << UPD_LEVELS)))
+    levels: Levels<UPD_LEVELS>,
 }
 
 pub(crate) struct UpdStart;
@@ -377,11 +434,11 @@ impl Step<Pasta> for UpdStart {
         let allocator = &mut Standard::new();
         let old_leaf = Element::alloc(dr, allocator, witness.as_ref().map(|w| w.old_leaf))?;
         let new_leaf = Element::alloc(dr, allocator, witness.as_ref().map(|w| w.new_leaf))?;
-        let one = Element::one();
-        let zero = Element::zero(dr);
-        let (old, new, index) = climb(dr, allocator, old_leaf.clone(), new_leaf.clone(), zero, &one, &witness)?;
-        let weight = next_weight(dr, &one);
-        let out: V<'dr, D, 6> = FixedVec::new(vec![old, new, old_leaf, new_leaf, index, weight])?;
+        let start = (old_leaf.clone(), new_leaf.clone(), Element::zero(dr), Element::one());
+        let levels = witness.as_ref().map(|w| w.levels);
+        let (old, new, index, weight) = climb(dr, allocator, start, &levels)?;
+        let pair = Element::zero(dr);
+        let out: V<'dr, D, 7> = FixedVec::new(vec![old, new, old_leaf, new_leaf, index, weight, pair])?;
         let data = values_of(&out);
         Ok(((Encoded::from_gadget(()), Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
     }
@@ -391,7 +448,7 @@ pub(crate) struct UpdExtend;
 
 impl Step<Pasta> for UpdExtend {
     const INDEX: Index = Index::new(5);
-    type Witness<'source> = UpdWitness;
+    type Witness<'source> = Levels<UPD_LEVELS>;
     type Aux<'source> = ();
     type Left = Update;
     type Right = ();
@@ -401,8 +458,8 @@ impl Step<Pasta> for UpdExtend {
         &self,
         dr: &mut D,
         _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
-        witness: DriverValue<D, UpdWitness>,
-        left: DriverValue<D, [Fp; 6]>,
+        witness: DriverValue<D, Levels<UPD_LEVELS>>,
+        left: DriverValue<D, [Fp; 7]>,
         _: DriverValue<D, ()>,
     ) -> StepOut<'dr, D, Self, HS>
     where
@@ -410,25 +467,142 @@ impl Step<Pasta> for UpdExtend {
     {
         let allocator = &mut Standard::new();
         let left = Encoded::new(dr, allocator, left)?;
-        let u: &V<'dr, D, 6> = left.as_gadget();
-        let (old, new, index) =
-            climb(dr, allocator, u[U_OLD].clone(), u[U_NEW].clone(), u[U_INDEX].clone(), &u[U_WEIGHT], &witness)?;
-        let weight = next_weight(dr, &u[U_WEIGHT]);
-        let out: V<'dr, D, 6> =
-            FixedVec::new(vec![old, new, u[U_OLD_LEAF].clone(), u[U_NEW_LEAF].clone(), index, weight])?;
+        let u: &V<'dr, D, 7> = left.as_gadget();
+        let start = (u[U_OLD].clone(), u[U_NEW].clone(), u[U_INDEX].clone(), u[U_WEIGHT].clone());
+        let (old, new, index, weight) = climb(dr, allocator, start, &witness)?;
+        let out: V<'dr, D, 7> = FixedVec::new(vec![
+            old,
+            new,
+            u[U_OLD_LEAF].clone(),
+            u[U_NEW_LEAF].clone(),
+            index,
+            weight,
+            u[U_PAIR].clone(),
+        ])?;
         let data = values_of(&out);
         Ok(((left, Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
     }
 }
 
+/// Two leaves whose paths meet within two levels: `a` changes and `b`, to its
+/// right, is filled. With `lift` both climb one level before they are joined.
+#[derive(Clone, Copy)]
+pub(crate) struct PairStartWitness {
+    a_old: Fp,
+    a_new: Fp,
+    b_new: Fp,
+    a_level: Levels<1>,
+    b_level: Levels<1>,
+}
+
+pub(crate) struct PairStart;
+
+impl Step<Pasta> for PairStart {
+    const INDEX: Index = Index::new(7);
+    type Witness<'source> = PairStartWitness;
+    type Aux<'source> = ();
+    type Left = ();
+    type Right = ();
+    type Output = Update;
+
+    fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
+        &self,
+        dr: &mut D,
+        _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
+        w: DriverValue<D, PairStartWitness>,
+        _: DriverValue<D, ()>,
+        _: DriverValue<D, ()>,
+    ) -> StepOut<'dr, D, Self, HS>
+    where
+        Self: 'dr,
+    {
+        let allocator = &mut Standard::new();
+        let a_old = Element::alloc(dr, allocator, w.as_ref().map(|w| w.a_old))?;
+        let a_new = Element::alloc(dr, allocator, w.as_ref().map(|w| w.a_new))?;
+        let b_new = Element::alloc(dr, allocator, w.as_ref().map(|w| w.b_new))?;
+
+        let a = (a_old.clone(), a_new.clone(), Element::zero(dr), Element::one());
+        let a = climb(dr, allocator, a, &w.as_ref().map(|w| w.a_level))?;
+        // `b` fills an empty slot.
+        let b = (Element::zero(dr), b_new.clone(), Element::zero(dr), Element::one());
+        let b = climb(dr, allocator, b, &w.as_ref().map(|w| w.b_level))?;
+        let ((old, new, index, weight), pair) = join(dr, a, b, &b_new)?;
+
+        let out: V<'dr, D, 7> = FixedVec::new(vec![old, new, a_old, a_new, index, weight, pair])?;
+        let data = values_of(&out);
+        Ok(((Encoded::from_gadget(()), Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
+    }
+}
+
+/// Levels climbed right after a [`PairJoin`].
+const JOIN_LEVELS: usize = 2;
+
+/// Joins two single-leaf updates that climbed to the same height, the right
+/// one filling an empty slot, and climbs on.
+pub(crate) struct PairJoin;
+
+impl Step<Pasta> for PairJoin {
+    const INDEX: Index = Index::new(25);
+    type Witness<'source> = Levels<JOIN_LEVELS>;
+    type Aux<'source> = ();
+    type Left = Update;
+    type Right = Update;
+    type Output = Update;
+
+    fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
+        &self,
+        dr: &mut D,
+        _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
+        witness: DriverValue<D, Levels<JOIN_LEVELS>>,
+        left: DriverValue<D, [Fp; 7]>,
+        right: DriverValue<D, [Fp; 7]>,
+    ) -> StepOut<'dr, D, Self, HS>
+    where
+        Self: 'dr,
+    {
+        let allocator = &mut Standard::new();
+        let left = Encoded::new(dr, allocator, left)?;
+        let right = Encoded::new(dr, allocator, right)?;
+        let a: &V<'dr, D, 7> = left.as_gadget();
+        let b: &V<'dr, D, 7> = right.as_gadget();
+        // Each side is a single leaf, and the right one was empty.
+        a[U_PAIR].enforce_zero(dr)?;
+        b[U_PAIR].enforce_zero(dr)?;
+        b[U_OLD_LEAF].enforce_zero(dr)?;
+
+        let node = |u: &V<'dr, D, 7>| (u[U_OLD].clone(), u[U_NEW].clone(), u[U_INDEX].clone(), u[U_WEIGHT].clone());
+        let (joined, pair) = join(dr, node(a), node(b), &b[U_NEW_LEAF])?;
+        let (old, new, index, weight) = climb(dr, allocator, joined, &witness)?;
+
+        let out: V<'dr, D, 7> =
+            FixedVec::new(vec![old, new, a[U_OLD_LEAF].clone(), a[U_NEW_LEAF].clone(), index, weight, pair])?;
+        let data = values_of(&out);
+        Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
+    }
+}
+
 /// The update reached the root: its weight is `2^ACC_DEPTH`.
-fn enforce_full_depth<'dr, D: Driver<'dr, F = Fp>>(dr: &mut D, update: &V<'dr, D, 6>) -> ragu::Result<()> {
+fn enforce_full_depth<'dr, D: Driver<'dr, F = Fp>>(dr: &mut D, update: &V<'dr, D, 7>) -> ragu::Result<()> {
     let full = constant(dr, 1u64 << ACC_DEPTH);
     enforce_equal(dr, &update[U_WEIGHT], &full)
 }
 
+/// Appends `leaf` to a running digest: a zero digest (nothing inserted yet)
+/// is replaced, anything else is chained exactly as `FoldStep` would.
+fn absorb<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    allocator: &mut impl Allocator<'dr, D>,
+    digest: &Element<'dr, D>,
+    leaf: &Element<'dr, D>,
+) -> ragu::Result<Element<'dr, D>> {
+    let empty = digest.is_zero(dr, allocator)?;
+    let tag = constant(dr, TAG_NODE);
+    let node = poseidon_hash(dr, &[tag, digest.clone(), leaf.clone()])?;
+    empty.conditional_select(dr, &node, leaf)
+}
+
 // --------------------------------------------------------------------------
-// Note insert: the note root changes by filling an empty leaf
+// Note insert: the note root changes by filling one or two empty leaves
 // --------------------------------------------------------------------------
 
 /// The state fields a root-changing step does not touch.
@@ -441,50 +615,88 @@ pub(crate) struct RestWitness {
     event_log: Fp,
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct NoteInsertWitness {
+    rest: RestWitness,
+    /// The second leaf of a paired update and how far right of the first it
+    /// sits; unused for a single leaf.
+    b_new: Fp,
+    delta: Fp,
+}
+
+/// Extends the operation's running transition with a note-tree update that
+/// fills one empty leaf, or two when the update is a pair.
 pub(crate) struct NoteInsert;
 
 impl Step<Pasta> for NoteInsert {
     const INDEX: Index = Index::new(6);
-    type Witness<'source> = RestWitness;
+    type Witness<'source> = NoteInsertWitness;
     type Aux<'source> = ();
-    type Left = Update;
-    type Right = ();
+    type Left = Transition;
+    type Right = Update;
     type Output = Transition;
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
         &self,
         dr: &mut D,
         _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
-        w: DriverValue<D, RestWitness>,
-        left: DriverValue<D, [Fp; 6]>,
-        _: DriverValue<D, ()>,
+        w: DriverValue<D, NoteInsertWitness>,
+        left: DriverValue<D, [Fp; PAYLOAD]>,
+        right: DriverValue<D, [Fp; 7]>,
     ) -> StepOut<'dr, D, Self, HS>
     where
         Self: 'dr,
     {
         let allocator = &mut Standard::new();
         let left = Encoded::new(dr, allocator, left)?;
-        let u: &V<'dr, D, 6> = left.as_gadget();
+        let right = Encoded::new(dr, allocator, right)?;
+        let t: &Payload<'dr, D> = left.as_gadget();
+        let u: &V<'dr, D, 7> = right.as_gadget();
         enforce_full_depth(dr, u)?;
-        // Append-only: the slot was empty.
+        // Append-only: the slot was empty (a pair's second slot was checked
+        // when it was joined).
         u[U_OLD_LEAF].enforce_zero(dr)?;
 
-        let epoch = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.epoch)))?;
-        let liab = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.liabilities)))?;
-        let nf_root = Element::alloc(dr, allocator, w.as_ref().map(|w| w.other_root))?;
-        let log = Element::alloc(dr, allocator, w.as_ref().map(|w| w.event_log))?;
+        // A pair commits to its second leaf; a single update has none.
+        let single = u[U_PAIR].is_zero(dr, allocator)?;
+        let b_new = Element::alloc(dr, allocator, w.as_ref().map(|w| w.b_new))?;
+        let delta = Element::alloc(dr, allocator, w.as_ref().map(|w| w.delta))?;
+        let opened = poseidon_hash(dr, &[b_new.clone(), delta])?;
+        let paired = single.not(dr);
+        opened.sub(dr, &u[U_PAIR]).mul(dr, &paired.element())?.enforce_zero(dr)?;
+
+        let epoch = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.rest.epoch)))?;
+        let liab = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.rest.liabilities)))?;
+        let nf_root = Element::alloc(dr, allocator, w.as_ref().map(|w| w.rest.other_root))?;
+        let log = Element::alloc(dr, allocator, w.as_ref().map(|w| w.rest.event_log))?;
 
         let inner = state_inner(dr, &epoch, &liab, &nf_root)?;
         let hash_prev = state_outer(dr, &inner, &u[U_OLD], &log)?;
         let hash_next = state_outer(dr, &inner, &u[U_NEW], &log)?;
-        // The inserted commitment enters the operation's digest as an output.
+        // Continues exactly where the running transition ends.
+        enforce_equal(dr, &t[END_STATE], &hash_prev)?;
+        enforce_equal(dr, &t[END_LIAB], &liab)?;
+
+        // The inserted commitments enter the operation's digest as outputs.
         let tag = constant(dr, TAG_OUTPUT);
-        let digest = poseidon_hash(dr, &[tag, u[U_NEW_LEAF].clone()])?;
-        let (count, anchor) = (Element::zero(dr), Element::zero(dr));
-        let out: Payload<'dr, D> =
-            FixedVec::new(vec![hash_prev, liab.clone(), hash_next, liab, count, digest, anchor])?;
+        let first = poseidon_hash(dr, &[tag.clone(), u[U_NEW_LEAF].clone()])?;
+        let second = poseidon_hash(dr, &[tag, b_new])?;
+        let one = absorb(dr, allocator, &t[DIGEST], &first)?;
+        let node_tag = constant(dr, TAG_NODE);
+        let two = poseidon_hash(dr, &[node_tag, one.clone(), second])?;
+        let digest = single.conditional_select(dr, &two, &one)?;
+
+        let out: Payload<'dr, D> = FixedVec::new(vec![
+            t[START_STATE].clone(),
+            t[START_LIAB].clone(),
+            hash_next,
+            liab,
+            t[COUNT].clone(),
+            digest,
+            t[ANCHOR].clone(),
+        ])?;
         let data = values_of(&out);
-        Ok(((left, Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
+        Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
     }
 }
 
@@ -546,112 +758,97 @@ fn key_lt<'dr, D: Driver<'dr, F = Fp>>(
     or(dr, &hi_lt, &tie)
 }
 
-pub(crate) struct OrderStep;
-
-impl Step<Pasta> for OrderStep {
-    const INDEX: Index = Index::new(7);
-    /// `[val, nf, next_val]`
-    type Witness<'source> = [Fp; 3];
-    type Aux<'source> = ();
-    type Left = ();
-    type Right = ();
-    type Output = Order;
-
-    fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
-        &self,
-        dr: &mut D,
-        _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
-        w: DriverValue<D, [Fp; 3]>,
-        _: DriverValue<D, ()>,
-        _: DriverValue<D, ()>,
-    ) -> StepOut<'dr, D, Self, HS>
-    where
-        Self: 'dr,
-    {
-        let allocator = &mut Standard::new();
-        let val = Element::alloc(dr, allocator, w.as_ref().map(|w| w[0]))?;
-        let nf = Element::alloc(dr, allocator, w.as_ref().map(|w| w[1]))?;
-        let next = Element::alloc(dr, allocator, w.as_ref().map(|w| w[2]))?;
-
-        let k_val = order_key(dr, allocator, &val)?;
-        let k_nf = order_key(dr, allocator, &nf)?;
-        let k_next = order_key(dr, allocator, &next)?;
-
-        let above_low = key_lt(dr, allocator, &k_val, &k_nf)?;
-        enforce_true(dr, &above_low)?;
-        let below_next = key_lt(dr, allocator, &k_nf, &k_next)?;
-        let no_next = next.is_zero(dr, allocator)?;
-        let in_gap = or(dr, &no_next, &below_next)?;
-        enforce_true(dr, &in_gap)?;
-
-        let out: V<'dr, D, 3> = FixedVec::new(vec![val, nf, next])?;
-        let data = values_of(&out);
-        Ok(((Encoded::from_gadget(()), Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
-    }
+#[derive(Clone, Copy)]
+pub(crate) struct NfLowWitness {
+    /// The low leaf before the insert: `(val, next_val, next_idx)`.
+    val: Fp,
+    next_val: Fp,
+    next_idx: u64,
+    nf: Fp,
+    /// Where the new leaf is appended.
+    new_idx: u64,
+    /// The appended leaf and how far right of the low leaf it sits.
+    b_new: Fp,
+    delta: Fp,
 }
 
-/// Re-points the low leaf: `(val, next_val, next_idx) -> (val, nf, new_idx)`.
+/// Checks a paired update against a sorted insertion: `low.val < nf <
+/// low.next_val` (or `low` is the last leaf), the low leaf is re-pointed
+/// `(val, next_val, next_idx) -> (val, nf, new_idx)`, and the second leaf of
+/// the pair landed on `new_idx`.
 pub(crate) struct NfLow;
 
 impl Step<Pasta> for NfLow {
     const INDEX: Index = Index::new(8);
-    /// `(low.next_idx, new_idx)`
-    type Witness<'source> = (u64, u64);
+    type Witness<'source> = NfLowWitness;
     type Aux<'source> = ();
     type Left = Update;
-    type Right = Order;
+    type Right = ();
     type Output = NfMid;
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
         &self,
         dr: &mut D,
         _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
-        w: DriverValue<D, (u64, u64)>,
-        left: DriverValue<D, [Fp; 6]>,
-        right: DriverValue<D, [Fp; 3]>,
+        w: DriverValue<D, NfLowWitness>,
+        left: DriverValue<D, [Fp; 7]>,
+        _: DriverValue<D, ()>,
     ) -> StepOut<'dr, D, Self, HS>
     where
         Self: 'dr,
     {
         let allocator = &mut Standard::new();
         let left = Encoded::new(dr, allocator, left)?;
-        let right = Encoded::new(dr, allocator, right)?;
-        let u: &V<'dr, D, 6> = left.as_gadget();
-        let o: &V<'dr, D, 3> = right.as_gadget();
-        let (val, nf, next_val) = (&o[0], &o[1], &o[2]);
+        let u: &V<'dr, D, 7> = left.as_gadget();
         enforce_full_depth(dr, u)?;
 
-        let next_idx = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.0)))?;
-        let new_idx = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.1)))?;
+        let val = Element::alloc(dr, allocator, w.as_ref().map(|w| w.val))?;
+        let nf = Element::alloc(dr, allocator, w.as_ref().map(|w| w.nf))?;
+        let next_val = Element::alloc(dr, allocator, w.as_ref().map(|w| w.next_val))?;
+        let next_idx = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.next_idx)))?;
+        let new_idx = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.new_idx)))?;
+        let b_new = Element::alloc(dr, allocator, w.as_ref().map(|w| w.b_new))?;
+        let delta = Element::alloc(dr, allocator, w.as_ref().map(|w| w.delta))?;
 
-        let old_low = indexed_leaf_hash(dr, val, next_val, &next_idx)?;
+        // Sorted: the nullifier falls in the gap after the low leaf.
+        let k_val = order_key(dr, allocator, &val)?;
+        let k_nf = order_key(dr, allocator, &nf)?;
+        let k_next = order_key(dr, allocator, &next_val)?;
+        let above_low = key_lt(dr, allocator, &k_val, &k_nf)?;
+        enforce_true(dr, &above_low)?;
+        let below_next = key_lt(dr, allocator, &k_nf, &k_next)?;
+        let no_next = next_val.is_zero(dr, allocator)?;
+        let in_gap = or(dr, &no_next, &below_next)?;
+        enforce_true(dr, &in_gap)?;
+
+        // The pair's second leaf is the one appended at `new_idx`.
+        let opened = poseidon_hash(dr, &[b_new.clone(), delta.clone()])?;
+        enforce_equal(dr, &opened, &u[U_PAIR])?;
+        let appended_at = u[U_INDEX].add(dr, &delta);
+        enforce_equal(dr, &appended_at, &new_idx)?;
+
+        let old_low = indexed_leaf_hash(dr, &val, &next_val, &next_idx)?;
         enforce_equal(dr, &old_low, &u[U_OLD_LEAF])?;
-        let new_low = indexed_leaf_hash(dr, val, nf, &new_idx)?;
+        let new_low = indexed_leaf_hash(dr, &val, &nf, &new_idx)?;
         enforce_equal(dr, &new_low, &u[U_NEW_LEAF])?;
 
-        let out: V<'dr, D, 6> = FixedVec::new(vec![
-            u[U_OLD].clone(),
-            u[U_NEW].clone(),
-            nf.clone(),
-            next_val.clone(),
-            next_idx,
-            new_idx,
-        ])?;
+        let out: V<'dr, D, 6> =
+            FixedVec::new(vec![u[U_OLD].clone(), u[U_NEW].clone(), nf, next_val, next_idx, b_new])?;
         let data = values_of(&out);
-        Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
+        Ok(((left, Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
     }
 }
 
-/// Appends the new leaf `(nf, next_val, next_idx)` at `new_idx` and exposes the
-/// whole insertion as a state transition.
+/// Checks the appended leaf is `(nf, next_val, next_idx)` and extends the
+/// operation's running transition with the whole insertion.
 pub(crate) struct NfInsert;
 
 impl Step<Pasta> for NfInsert {
     const INDEX: Index = Index::new(9);
     type Witness<'source> = RestWitness;
     type Aux<'source> = ();
-    type Left = NfMid;
-    type Right = Update;
+    type Left = Transition;
+    type Right = NfMid;
     type Output = Transition;
 
     fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
@@ -659,7 +856,7 @@ impl Step<Pasta> for NfInsert {
         dr: &mut D,
         _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
         w: DriverValue<D, RestWitness>,
-        left: DriverValue<D, [Fp; 6]>,
+        left: DriverValue<D, [Fp; PAYLOAD]>,
         right: DriverValue<D, [Fp; 6]>,
     ) -> StepOut<'dr, D, Self, HS>
     where
@@ -668,18 +865,13 @@ impl Step<Pasta> for NfInsert {
         let allocator = &mut Standard::new();
         let left = Encoded::new(dr, allocator, left)?;
         let right = Encoded::new(dr, allocator, right)?;
-        let m: &V<'dr, D, 6> = left.as_gadget();
-        let a: &V<'dr, D, 6> = right.as_gadget();
-        let (pre_root, mid_root, nf, next_val, next_idx, new_idx) = (&m[0], &m[1], &m[2], &m[3], &m[4], &m[5]);
+        let t: &Payload<'dr, D> = left.as_gadget();
+        let m: &V<'dr, D, 6> = right.as_gadget();
+        let (pre_root, post_root, nf, next_val, next_idx, appended) = (&m[0], &m[1], &m[2], &m[3], &m[4], &m[5]);
 
-        enforce_full_depth(dr, a)?;
-        // The append continues from the tree the low-leaf update left, lands
-        // on the index the low leaf now points at, and fills an empty slot.
-        enforce_equal(dr, &a[U_OLD], mid_root)?;
-        enforce_equal(dr, &a[U_INDEX], new_idx)?;
-        a[U_OLD_LEAF].enforce_zero(dr)?;
+        // The new leaf takes over the low leaf's old successor.
         let new_leaf = indexed_leaf_hash(dr, nf, next_val, next_idx)?;
-        enforce_equal(dr, &new_leaf, &a[U_NEW_LEAF])?;
+        enforce_equal(dr, &new_leaf, appended)?;
 
         let epoch = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.epoch)))?;
         let liab = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.liabilities)))?;
@@ -687,15 +879,27 @@ impl Step<Pasta> for NfInsert {
         let log = Element::alloc(dr, allocator, w.as_ref().map(|w| w.event_log))?;
 
         let inner_prev = state_inner(dr, &epoch, &liab, pre_root)?;
-        let inner_next = state_inner(dr, &epoch, &liab, &a[U_NEW])?;
+        let inner_next = state_inner(dr, &epoch, &liab, post_root)?;
         let hash_prev = state_outer(dr, &inner_prev, &note_root, &log)?;
         let hash_next = state_outer(dr, &inner_next, &note_root, &log)?;
+        // Continues exactly where the running transition ends.
+        enforce_equal(dr, &t[END_STATE], &hash_prev)?;
+        enforce_equal(dr, &t[END_LIAB], &liab)?;
+
         // The inserted nullifier enters the operation's digest as a spend.
         let tag = constant(dr, TAG_SPEND);
-        let digest = poseidon_hash(dr, &[tag, nf.clone()])?;
-        let (count, anchor) = (Element::zero(dr), Element::zero(dr));
-        let out: Payload<'dr, D> =
-            FixedVec::new(vec![hash_prev, liab.clone(), hash_next, liab, count, digest, anchor])?;
+        let spend = poseidon_hash(dr, &[tag, nf.clone()])?;
+        let digest = absorb(dr, allocator, &t[DIGEST], &spend)?;
+
+        let out: Payload<'dr, D> = FixedVec::new(vec![
+            t[START_STATE].clone(),
+            t[START_LIAB].clone(),
+            hash_next,
+            liab,
+            t[COUNT].clone(),
+            digest,
+            t[ANCHOR].clone(),
+        ])?;
         let data = values_of(&out);
         Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
     }
@@ -731,31 +935,75 @@ fn tree_fp(bytes: &[u8; 32]) -> Result<Fp> {
     })
 }
 
-fn prove_update(app: &App, u: &LeafUpdate) -> Result<Pcd<Pasta, Rank, Update>> {
-    if u.siblings.len() != ACC_DEPTH {
-        return Err(CircuitError::InvalidWitness("invalid sibling length".into()));
-    }
-    let (old_leaf, new_leaf) = (tree_fp(&u.old_leaf)?, tree_fp(&u.new_leaf)?);
-    let chunk = |i: usize| -> Result<UpdWitness> {
-        let mut siblings = [Fp::from(0u64); UPD_LEVELS];
-        for (j, s) in siblings.iter_mut().enumerate() {
-            *s = tree_fp(&u.siblings[i * UPD_LEVELS + j])?;
-        }
-        Ok(UpdWitness {
-            old_leaf,
-            new_leaf,
-            siblings,
-            bits: core::array::from_fn(|j| (u.leaf_index >> (i * UPD_LEVELS + j)) & 1 == 1),
-        })
-    };
-    let mut pcd = app.seed(&mut rng(), UpdStart, chunk(0)?).map_err(|e| ragu_err("update", e))?.0;
-    for i in 1..UPD_STEPS {
+fn single_start(u: &LeafUpdate, until: usize) -> Result<UpdWitness> {
+    Ok(UpdWitness { old_leaf: tree_fp(&u.old_leaf)?, new_leaf: tree_fp(&u.new_leaf)?, levels: Levels::of(u, 0, until)? })
+}
+
+/// Climbs `pcd` from level `from` up to (not including) level `until`.
+fn climb_to(
+    app: &App,
+    mut pcd: Pcd<Pasta, Rank, Update>,
+    u: &LeafUpdate,
+    from: usize,
+    until: usize,
+) -> Result<Pcd<Pasta, Rank, Update>> {
+    let mut level = from;
+    while level < until {
         pcd = app
-            .fuse(&mut rng(), UpdExtend, chunk(i)?, pcd, unit(app))
+            .fuse(&mut rng(), UpdExtend, Levels::of(u, level, until)?, pcd, unit(app))
             .map_err(|e| ragu_err("update", e))?
             .0;
+        level += UPD_LEVELS;
     }
     Ok(pcd)
+}
+
+fn check_update(u: &LeafUpdate) -> Result<()> {
+    if u.siblings.len() != ACC_DEPTH || u.leaf_index >> ACC_DEPTH != 0 {
+        return Err(CircuitError::InvalidWitness("invalid leaf update".into()));
+    }
+    Ok(())
+}
+
+/// One leaf changed: its path from the leaf to the root.
+fn prove_update(app: &App, u: &LeafUpdate) -> Result<Pcd<Pasta, Rank, Update>> {
+    check_update(u)?;
+    let pcd = app.seed(&mut rng(), UpdStart, single_start(u, ACC_DEPTH)?).map_err(|e| ragu_err("update", e))?.0;
+    climb_to(app, pcd, u, UPD_LEVELS, ACC_DEPTH)
+}
+
+/// Two leaves changed, `a` first and then `b` to its right filling an empty
+/// slot. Their paths are proven separately only up to where they meet; the
+/// shared part above is proven once.
+fn prove_pair(app: &App, a: &LeafUpdate, b: &LeafUpdate) -> Result<Pcd<Pasta, Rank, Update>> {
+    check_update(a)?;
+    check_update(b)?;
+    if a.leaf_index >= b.leaf_index || b.old_leaf != [0u8; 32] || b.pre_root != a.post_root {
+        return Err(CircuitError::InvalidWitness("leaf updates cannot be proven as a pair".into()));
+    }
+    // The level at which the two paths become siblings.
+    let meet = (63 - (a.leaf_index ^ b.leaf_index).leading_zeros()) as usize;
+    let (pcd, done) = if meet <= 1 {
+        let w = PairStartWitness {
+            a_old: tree_fp(&a.old_leaf)?,
+            a_new: tree_fp(&a.new_leaf)?,
+            b_new: tree_fp(&b.new_leaf)?,
+            a_level: Levels::of(a, 0, meet)?,
+            b_level: Levels::of(b, 0, meet)?,
+        };
+        (app.seed(&mut rng(), PairStart, w).map_err(|e| ragu_err("pair", e))?.0, meet + 1)
+    } else {
+        let side = |u: &LeafUpdate| -> Result<Pcd<Pasta, Rank, Update>> {
+            let pcd = app.seed(&mut rng(), UpdStart, single_start(u, meet)?).map_err(|e| ragu_err("update", e))?.0;
+            climb_to(app, pcd, u, UPD_LEVELS, meet)
+        };
+        let (left, right) = (side(a)?, side(b)?);
+        let after = Levels::of(a, meet + 1, ACC_DEPTH)?;
+        let pcd = app.fuse(&mut rng(), PairJoin, after, left, right).map_err(|e| ragu_err("pair", e))?.0;
+        (pcd, meet + 1 + JOIN_LEVELS)
+    };
+    // Above the meeting point both leaves share `a`'s path.
+    climb_to(app, pcd, a, done, ACC_DEPTH)
 }
 
 fn rest(state: &MintState, other_root: Fp) -> Result<RestWitness> {
@@ -763,28 +1011,54 @@ fn rest(state: &MintState, other_root: Fp) -> Result<RestWitness> {
     Ok(RestWitness { epoch: f.epoch, liabilities: f.liabilities, other_root, event_log: f.event_log })
 }
 
-fn prove_nullifier_insert(app: &App, state: &MintState, t: &NullifierTransitionWitness) -> Result<TransitionPcd> {
+fn index_delta(a: &LeafUpdate, b: &LeafUpdate) -> Fp {
+    Fp::from(b.leaf_index - a.leaf_index)
+}
+
+/// Extends `acc` with one sorted nullifier insertion.
+fn prove_nullifier_insert(
+    app: &App,
+    state: &MintState,
+    t: &NullifierTransitionWitness,
+    acc: TransitionPcd,
+) -> Result<TransitionPcd> {
     let missing = || CircuitError::InvalidWitness("nullifier transition carries no tree updates".into());
     let (low_update, append_update) =
         (t.low_update.as_ref().ok_or_else(missing)?, t.append_update.as_ref().ok_or_else(missing)?);
     let low = &t.non_membership.low_leaf;
 
-    let order = [tree_fp(&low.val)?, tree_fp(&t.nullifier)?, tree_fp(&low.next_val)?];
-    let order = app.seed(&mut rng(), OrderStep, order).map_err(|e| ragu_err("nullifier order", e))?.0;
-    let low_pcd = prove_update(app, low_update)?;
-    let mid = app
-        .fuse(&mut rng(), NfLow, (low.next_idx, t.new_leaf_index), low_pcd, order)
-        .map_err(|e| ragu_err("nullifier low leaf", e))?
-        .0;
-    let append_pcd = prove_update(app, append_update)?;
+    let pair = prove_pair(app, low_update, append_update)?;
+    let w = NfLowWitness {
+        val: tree_fp(&low.val)?,
+        next_val: tree_fp(&low.next_val)?,
+        next_idx: low.next_idx,
+        nf: tree_fp(&t.nullifier)?,
+        new_idx: t.new_leaf_index,
+        b_new: tree_fp(&append_update.new_leaf)?,
+        delta: index_delta(low_update, append_update),
+    };
+    let mid = app.fuse(&mut rng(), NfLow, w, pair, unit(app)).map_err(|e| ragu_err("nullifier low leaf", e))?.0;
     let w = rest(state, StateFields::of(state)?.note_root)?;
-    app.fuse(&mut rng(), NfInsert, w, mid, append_pcd).map(|p| p.0).map_err(|e| ragu_err("nullifier insert", e))
+    app.fuse(&mut rng(), NfInsert, w, acc, mid).map(|p| p.0).map_err(|e| ragu_err("nullifier insert", e))
 }
 
-fn prove_note_insert(app: &App, state: &MintState, u: &LeafUpdate) -> Result<TransitionPcd> {
-    let upd = prove_update(app, u)?;
-    let w = rest(state, StateFields::of(state)?.nf_root)?;
-    app.fuse(&mut rng(), NoteInsert, w, upd, unit(app)).map(|p| p.0).map_err(|e| ragu_err("note insert", e))
+/// Extends `acc` with one note append, or with two proven as a pair.
+fn prove_note_insert(
+    app: &App,
+    state: &MintState,
+    first: &LeafUpdate,
+    second: Option<&LeafUpdate>,
+    acc: TransitionPcd,
+) -> Result<TransitionPcd> {
+    let rest = rest(state, StateFields::of(state)?.nf_root)?;
+    let (upd, w) = match second {
+        None => (prove_update(app, first)?, NoteInsertWitness { rest, b_new: Fp::from(0u64), delta: Fp::from(0u64) }),
+        Some(second) => (
+            prove_pair(app, first, second)?,
+            NoteInsertWitness { rest, b_new: tree_fp(&second.new_leaf)?, delta: index_delta(first, second) },
+        ),
+    };
+    app.fuse(&mut rng(), NoteInsert, w, acc, upd).map(|p| p.0).map_err(|e| ragu_err("note insert", e))
 }
 
 fn step_parts(step: &FoldedProof) -> Result<(StepKind, &StateTransition)> {
@@ -863,19 +1137,31 @@ pub(super) fn prove_step(app: &App, step: &FoldedProof) -> Result<(TransitionPcd
         if cur.nullifier_acc_root != nt.pre_root {
             return Err(invalid("nullifier updates do not chain from the state's nullifier root"));
         }
-        let leaf = prove_nullifier_insert(app, &cur, nt)?;
-        acc = fuse(app, acc, leaf)?;
+        acc = prove_nullifier_insert(app, &cur, nt, acc)?;
         cur.nullifier_acc_root = nt.post_root;
     }
 
-    // 3. Note inserts, in order.
-    for nu in &t.note_updates {
-        if cur.note_acc_root != nu.pre_root {
+    // 3. Note inserts, in order, two at a time where they can share a path.
+    for chunk in t.note_updates.chunks(2) {
+        if cur.note_acc_root != chunk[0].pre_root {
             return Err(invalid("note updates do not chain from the state's note root"));
         }
-        let leaf = prove_note_insert(app, &cur, nu)?;
-        acc = fuse(app, acc, leaf)?;
-        cur.note_acc_root = nu.post_root;
+        let pairable = chunk.len() == 2
+            && chunk[1].pre_root == chunk[0].post_root
+            && chunk[0].leaf_index < chunk[1].leaf_index
+            && chunk[1].old_leaf == [0u8; 32];
+        if pairable {
+            acc = prove_note_insert(app, &cur, &chunk[0], Some(&chunk[1]), acc)?;
+            cur.note_acc_root = chunk[1].post_root;
+        } else {
+            for nu in chunk {
+                if cur.note_acc_root != nu.pre_root {
+                    return Err(invalid("note updates do not chain from the state's note root"));
+                }
+                acc = prove_note_insert(app, &cur, nu, None, acc)?;
+                cur.note_acc_root = nu.post_root;
+            }
+        }
     }
 
     if &cur != next {

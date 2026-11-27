@@ -44,15 +44,17 @@ The Ragu fold (`ZASHU_PCD_BACKEND=ragu`) also proves how the event log and both 
 
 | One operation | Ragu fold | verify | proof | Aggregated fold | verify | proof |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| value step only (epoch advance) | 891 ms | 76 ms | 6,208 B | 6,288 ms | 358 ms | 19,392 B |
-| shielded mint: value + 1 note insert | 5,983 ms | 74 ms | 6,208 B | 11,254 ms | 360 ms | 19,392 B |
-| shielded swap: value + 1 nullifier + 2 note inserts | 21,432 ms | 74 ms | 6,208 B | 26,809 ms | 333 ms | 19,392 B |
-| shielded melt: value + 1 nullifier insert | 11,116 ms | 76 ms | 6,208 B | 16,522 ms | 334 ms | 19,392 B |
+| value step only (epoch advance) | 914 ms | 86 ms | 6,208 B | 7,007 ms | 521 ms | 19,392 B |
+| shielded mint: value + 1 note insert | 6,057 ms | 82 ms | 6,208 B | 12,142 ms | 382 ms | 19,392 B |
+| shielded swap: value + 1 nullifier + 2 note inserts | 13,181 ms | 84 ms | 6,208 B | 18,985 ms | 368 ms | 19,392 B |
+| shielded melt: value + 1 nullifier insert | 7,269 ms | 89 ms | 6,208 B | 13,848 ms | 472 ms | 19,392 B |
 
-* **Root-binding fold:** about 1 s for the value step, 5 to 6 s per note insert (8 Merkle-update steps and the insert) and about 10 s per nullifier insert (two Merkle updates, an order check and the insert).
+* **Root-binding fold:** about 1 s for the value step, about 5 s for one note insert (8 Merkle-update steps and the insert), about 6 s for two note inserts proven as a pair, and about 6.5 s per nullifier insert in a small tree.
+* **Shared paths.** Two leaves changed together are proven separately only up to the level where their paths meet, and once above it. Two outputs of one operation are neighbours, so the second costs about one extra step. A nullifier insert changes the low leaf and appends a new one; those meet at about `log2(tree size)`, so the saving shrinks as the tree grows: 12 steps in the small trees measured here, an estimated 16 at a million nullifiers (about 8.5 s, not measured), against 20 before this change.
+* Before paths were shared and the insert steps also did the fusing, the swap row was 21.4 s and the melt row 11.1 s.
 * **Aggregated fold:** about 5.4 s on top per operation (compress, decompress and two aggregator steps), plus about 2.4 s to decompress a transaction proof when the operation has one. The aggregator application takes about 25 s to build on first use, a proof in flight is about 172 MB, and the mint's shielded end-to-end test peaked at 3.1 GB.
 * The mint folds on its background worker, so this bounds how fast the solvency proof can keep up, not how fast requests are answered; it does compete with transaction proving for CPU. The solvency-fold rows in the table above use value-only steps. `ZASHU_PCD_BACKEND=ragu-unbound` skips the root bindings.
-* The mint's shielded end-to-end test takes about 8 s on Halo 2, 52 s on `ragu-unbound`, 142 s on `ragu` and 226 s on `ragu-aggregated`.
+* The mint's shielded end-to-end test takes about 8 s on Halo 2, 52 s on `ragu-unbound`, 112 s on `ragu` and 226 s on `ragu-aggregated` (the last measured before insert paths were shared).
 
 ## 2. Tachyon Nullifier Accumulator & Epoch Pruning
 
