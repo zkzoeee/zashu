@@ -19,6 +19,15 @@ use crate::error::{CircuitError, Result};
 
 static POSEIDON_T3: PoseidonFpT3 = PoseidonFpT3;
 
+/// Digest domain tags. A transaction's digest is a left-leaning hash chain
+/// over tagged leaves, nullifiers first and then output commitments:
+/// `leaf = Poseidon2(TAG_SPEND, nf)` or `Poseidon2(TAG_OUTPUT, cm)`,
+/// `node = Poseidon3(TAG_NODE, left, right)`. The Mode A fold accumulates the
+/// same digest over the nullifiers and notes an operation inserts.
+pub const TAG_SPEND: u64 = 0x21;
+pub const TAG_OUTPUT: u64 = 0x22;
+pub const TAG_NODE: u64 = 0x23;
+
 /// In-circuit `halo2_poseidon::Hash<_, P128Pow5T3, ConstantLength<L>, 3, 2>`
 /// for `L = inputs.len()`.
 ///

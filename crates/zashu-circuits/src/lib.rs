@@ -5,6 +5,8 @@ pub mod pcd;
 pub mod poseidon_chip;
 pub mod predicates;
 #[cfg(feature = "ragu")]
+pub(crate) mod ragu_app;
+#[cfg(feature = "ragu")]
 pub mod ragu_gadgets;
 pub mod range_check;
 

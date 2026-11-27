@@ -42,32 +42,37 @@ use zashu_core::types::MintState;
 
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, SubcircuitId};
-use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of};
+use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of, TAG_NODE};
 
 /// Ragu circuit rank (`2^14` constraints per step circuit).
 pub const RAGU_RANK: u32 = 14;
 
-pub(super) type Rank = R<14>;
-pub(super) const PAYLOAD: usize = 5;
+pub(crate) type Rank = R<14>;
+pub(crate) const PAYLOAD: usize = 7;
 /// Payload plus Ragu's header suffix slot.
 const HEADER_SIZE: usize = PAYLOAD + 1;
 type App = Application<'static, Pasta, Rank, HEADER_SIZE>;
-pub(super) type TransitionPcd = Pcd<Pasta, Rank, Transition>;
-pub(super) type Payload<'dr, D> = FixedVec<Element<'dr, D>, ConstLen<PAYLOAD>>;
+pub(crate) type TransitionPcd = Pcd<Pasta, Rank, Transition>;
+pub(crate) type Payload<'dr, D> = FixedVec<Element<'dr, D>, ConstLen<PAYLOAD>>;
 
 // Header payload slots.
-pub(super) const START_STATE: usize = 0;
-pub(super) const START_LIAB: usize = 1;
-pub(super) const END_STATE: usize = 2;
-pub(super) const END_LIAB: usize = 3;
-pub(super) const COUNT: usize = 4;
+pub(crate) const START_STATE: usize = 0;
+pub(crate) const START_LIAB: usize = 1;
+pub(crate) const END_STATE: usize = 2;
+pub(crate) const END_LIAB: usize = 3;
+pub(crate) const COUNT: usize = 4;
+/// Digest of the nullifiers and notes inserted (zero if none); see
+/// [`TAG_NODE`](crate::ragu_gadgets::TAG_NODE).
+pub(crate) const DIGEST: usize = 5;
+/// The note root at the start of the leftmost transition.
+pub(crate) const ANCHOR: usize = 6;
 
 pub(super) fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
     CircuitError::Plonk(format!("ragu {context}: {e}"))
 }
 
-/// `[start_state, start_liabilities, end_state, end_liabilities, step_count]`
-pub(super) struct Transition;
+/// `[start_state, start_liabilities, end_state, end_liabilities, step_count, digest, anchor]`
+pub(crate) struct Transition;
 
 impl Header<Fp> for Transition {
     const SUFFIX: Suffix = Suffix::new(0);
@@ -185,7 +190,9 @@ fn value_step<'dr, D: Driver<'dr, F = Fp>>(
     }
 
     // Slot order: START_STATE, START_LIAB, END_STATE, END_LIAB, COUNT.
-    FixedVec::new(vec![prev.hash, prev.liabilities, next.hash, next.liabilities, Element::one()])
+    // This fold does not track inserts: digest and anchor stay zero.
+    let (digest, anchor) = (Element::zero(dr), Element::zero(dr));
+    FixedVec::new(vec![prev.hash, prev.liabilities, next.hash, next.liabilities, Element::one(), digest, anchor])
 }
 
 macro_rules! leaf_step {
@@ -236,7 +243,7 @@ leaf_step!(SwapLeaf, 1, StepKind::Swap);
 leaf_step!(MeltLeaf, 2, StepKind::Melt);
 
 /// Recursive step: merges two adjacent transitions into one.
-pub(super) struct FoldStep;
+pub(crate) struct FoldStep;
 
 impl Step<Pasta> for FoldStep {
     const INDEX: Index = Index::new(3);
@@ -276,12 +283,23 @@ impl Step<Pasta> for FoldStep {
         l[END_LIAB].sub(dr, &r[START_LIAB]).enforce_zero(dr)?;
 
         let count = l[COUNT].add(dr, &r[COUNT]);
+
+        // Digests chain left to right; a zero digest (no inserts) is neutral.
+        let left_empty = l[DIGEST].is_zero(dr, allocator)?;
+        let right_empty = r[DIGEST].is_zero(dr, allocator)?;
+        let tag = Element::constant(dr, Fp::from(TAG_NODE));
+        let node = poseidon_hash(dr, &[tag, l[DIGEST].clone(), r[DIGEST].clone()])?;
+        let unless_right_empty = right_empty.conditional_select(dr, &node, &l[DIGEST])?;
+        let digest = left_empty.conditional_select(dr, &unless_right_empty, &r[DIGEST])?;
+
         let out = FixedVec::new(vec![
             l[START_STATE].clone(),
             l[START_LIAB].clone(),
             r[END_STATE].clone(),
             r[END_LIAB].clone(),
             count,
+            digest,
+            l[ANCHOR].clone(),
         ])?;
         let data = values_of(&out);
         Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
@@ -443,7 +461,7 @@ pub(super) fn finish_with<const HS: usize>(
     let bytes = proof.to_bytes().map_err(|e| ragu_err("encode", format!("{e:?}")))?;
 
     // Same public-input layout as the Halo 2 `FoldBatch` proof.
-    let public_inputs = [START_LIAB, END_LIAB, START_STATE, END_STATE, COUNT]
+    let public_inputs = [START_LIAB, END_LIAB, START_STATE, END_STATE, COUNT, DIGEST, ANCHOR]
         .map(|slot| data[slot].to_bytes())
         .to_vec();
     Ok(FoldedProof {
@@ -618,13 +636,15 @@ pub(super) fn verify_with<const HS: usize>(
         .iter()
         .map(|b| Fp::from_bytes(*b).ok_or_else(|| fail("non-canonical public input".into())))
         .collect::<Result<Vec<_>>>()?;
-    // Public inputs: [start_liab, end_liab, start_state, end_state, count].
+    // Public inputs: [start_liab, end_liab, start_state, end_state, count, digest, anchor].
     let mut data = [Fp::from(0u64); PAYLOAD];
     data[START_LIAB] = pi[0];
     data[END_LIAB] = pi[1];
     data[START_STATE] = pi[2];
     data[END_STATE] = pi[3];
     data[COUNT] = pi[4];
+    data[DIGEST] = pi[5];
+    data[ANCHOR] = pi[6];
 
     if proof.ipa_proof.len() != CompressedProof::<Pasta>::encoded_len::<Rank>() {
         return Err(fail("unexpected proof length".into()));

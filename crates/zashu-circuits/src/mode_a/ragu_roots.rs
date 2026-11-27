@@ -32,8 +32,6 @@
 //! match what was paid over Lightning. Those are checked by the mint, and by
 //! an auditor replaying the public event log.
 
-use std::sync::OnceLock;
-
 use ragu::drivers::{Driver, DriverValue};
 use ragu::gadgets::{Bound, Kind};
 use ragu::header::{Header, Padding, Suffix};
@@ -43,7 +41,7 @@ use ragu::primitives::allocator::{Allocator, Standard};
 use ragu::primitives::vec::{ConstLen, FixedVec};
 use ragu::primitives::{decompose, decompose_n, multiadd, Boolean, Element};
 use ragu::step::{Encoded, Index, Oracles, Step};
-use ragu::{Application, ApplicationBuilder, Coeff, Pcd};
+use ragu::{Coeff, Pcd};
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use zashu_acc::{LeafUpdate, NullifierTransitionWitness, ACC_DEPTH};
@@ -59,11 +57,9 @@ use super::ragu_backend::{
 };
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, StateTransition, SubcircuitId};
-use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of};
+use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of, TAG_OUTPUT, TAG_SPEND};
 
-/// Largest header payload (6) plus Ragu's suffix slot.
-const HEADER_SIZE: usize = 7;
-type App = Application<'static, Pasta, Rank, HEADER_SIZE>;
+type App = crate::ragu_app::WalletApp;
 
 /// Merkle levels proven per update step (each level hashes twice: old and new).
 const UPD_LEVELS: usize = 4;
@@ -73,7 +69,7 @@ const _: () = assert!(ACC_DEPTH % UPD_LEVELS == 0 && ACC_DEPTH == 32);
 macro_rules! header {
     ($(#[$doc:meta])* $name:ident, $suffix:expr, $n:expr) => {
         $(#[$doc])*
-        struct $name;
+        pub(crate) struct $name;
 
         impl Header<Fp> for $name {
             const SUFFIX: Suffix = Suffix::new($suffix);
@@ -215,7 +211,7 @@ fn state_outer<'dr, D: Driver<'dr, F = Fp>>(
 // --------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct ValueWitness {
+pub(crate) struct ValueWitness {
     prev: StateFields,
     next_epoch: u64,
     next_liabilities: u64,
@@ -264,12 +260,14 @@ fn value_leaf<'dr, D: Driver<'dr, F = Fp>>(
     let inner_next = state_inner(dr, &next_epoch, &next_liab, &nf_root)?;
     let hash_prev = state_outer(dr, &inner_prev, &note_root, &log)?;
     let hash_next = state_outer(dr, &inner_next, &note_root, &next_log)?;
-    FixedVec::new(vec![hash_prev, liab, hash_next, next_liab, Element::one()])
+    // No inserts here; the anchor is the note root this operation starts from.
+    let digest = Element::zero(dr);
+    FixedVec::new(vec![hash_prev, liab, hash_next, next_liab, Element::one(), digest, note_root])
 }
 
 macro_rules! value_step {
     ($name:ident, $index:expr, $kind:expr) => {
-        struct $name;
+        pub(crate) struct $name;
 
         impl Step<Pasta> for $name {
             const INDEX: Index = Index::new($index);
@@ -312,7 +310,7 @@ value_step!(ValueMelt, 2, StepKind::Melt);
 // --------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct UpdWitness {
+pub(crate) struct UpdWitness {
     old_leaf: Fp,
     new_leaf: Fp,
     siblings: [Fp; UPD_LEVELS],
@@ -355,7 +353,7 @@ fn next_weight<'dr, D: Driver<'dr, F = Fp>>(dr: &mut D, weight: &Element<'dr, D>
     weight.scale(dr, Coeff::Arbitrary(Fp::from(1u64 << UPD_LEVELS)))
 }
 
-struct UpdStart;
+pub(crate) struct UpdStart;
 
 impl Step<Pasta> for UpdStart {
     const INDEX: Index = Index::new(4);
@@ -389,7 +387,7 @@ impl Step<Pasta> for UpdStart {
     }
 }
 
-struct UpdExtend;
+pub(crate) struct UpdExtend;
 
 impl Step<Pasta> for UpdExtend {
     const INDEX: Index = Index::new(5);
@@ -435,7 +433,7 @@ fn enforce_full_depth<'dr, D: Driver<'dr, F = Fp>>(dr: &mut D, update: &V<'dr, D
 
 /// The state fields a root-changing step does not touch.
 #[derive(Clone, Copy)]
-struct RestWitness {
+pub(crate) struct RestWitness {
     epoch: u64,
     liabilities: u64,
     /// NoteInsert: the nullifier root. NfInsert: the note root.
@@ -443,7 +441,7 @@ struct RestWitness {
     event_log: Fp,
 }
 
-struct NoteInsert;
+pub(crate) struct NoteInsert;
 
 impl Step<Pasta> for NoteInsert {
     const INDEX: Index = Index::new(6);
@@ -479,8 +477,12 @@ impl Step<Pasta> for NoteInsert {
         let inner = state_inner(dr, &epoch, &liab, &nf_root)?;
         let hash_prev = state_outer(dr, &inner, &u[U_OLD], &log)?;
         let hash_next = state_outer(dr, &inner, &u[U_NEW], &log)?;
-        let zero = Element::zero(dr);
-        let out: Payload<'dr, D> = FixedVec::new(vec![hash_prev, liab.clone(), hash_next, liab, zero])?;
+        // The inserted commitment enters the operation's digest as an output.
+        let tag = constant(dr, TAG_OUTPUT);
+        let digest = poseidon_hash(dr, &[tag, u[U_NEW_LEAF].clone()])?;
+        let (count, anchor) = (Element::zero(dr), Element::zero(dr));
+        let out: Payload<'dr, D> =
+            FixedVec::new(vec![hash_prev, liab.clone(), hash_next, liab, count, digest, anchor])?;
         let data = values_of(&out);
         Ok(((left, Encoded::from_gadget(()), Encoded::from_gadget(out)), data, D::unit()))
     }
@@ -544,7 +546,7 @@ fn key_lt<'dr, D: Driver<'dr, F = Fp>>(
     or(dr, &hi_lt, &tie)
 }
 
-struct OrderStep;
+pub(crate) struct OrderStep;
 
 impl Step<Pasta> for OrderStep {
     const INDEX: Index = Index::new(7);
@@ -589,7 +591,7 @@ impl Step<Pasta> for OrderStep {
 }
 
 /// Re-points the low leaf: `(val, next_val, next_idx) -> (val, nf, new_idx)`.
-struct NfLow;
+pub(crate) struct NfLow;
 
 impl Step<Pasta> for NfLow {
     const INDEX: Index = Index::new(8);
@@ -642,7 +644,7 @@ impl Step<Pasta> for NfLow {
 
 /// Appends the new leaf `(nf, next_val, next_idx)` at `new_idx` and exposes the
 /// whole insertion as a state transition.
-struct NfInsert;
+pub(crate) struct NfInsert;
 
 impl Step<Pasta> for NfInsert {
     const INDEX: Index = Index::new(9);
@@ -688,8 +690,12 @@ impl Step<Pasta> for NfInsert {
         let inner_next = state_inner(dr, &epoch, &liab, &a[U_NEW])?;
         let hash_prev = state_outer(dr, &inner_prev, &note_root, &log)?;
         let hash_next = state_outer(dr, &inner_next, &note_root, &log)?;
-        let zero = Element::zero(dr);
-        let out: Payload<'dr, D> = FixedVec::new(vec![hash_prev, liab.clone(), hash_next, liab, zero])?;
+        // The inserted nullifier enters the operation's digest as a spend.
+        let tag = constant(dr, TAG_SPEND);
+        let digest = poseidon_hash(dr, &[tag, nf.clone()])?;
+        let (count, anchor) = (Element::zero(dr), Element::zero(dr));
+        let out: Payload<'dr, D> =
+            FixedVec::new(vec![hash_prev, liab.clone(), hash_next, liab, count, digest, anchor])?;
         let data = values_of(&out);
         Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
     }
@@ -700,25 +706,7 @@ impl Step<Pasta> for NfInsert {
 // --------------------------------------------------------------------------
 
 fn app() -> Result<&'static App> {
-    static APP: OnceLock<std::result::Result<App, String>> = OnceLock::new();
-    APP.get_or_init(|| {
-        let pasta = ragu::pcd::pasta::baked();
-        ApplicationBuilder::<Pasta, Rank, HEADER_SIZE>::new()
-            .register(ValueMint)
-            .and_then(|b| b.register(ValueSwap))
-            .and_then(|b| b.register(ValueMelt))
-            .and_then(|b| b.register(FoldStep))
-            .and_then(|b| b.register(UpdStart))
-            .and_then(|b| b.register(UpdExtend))
-            .and_then(|b| b.register(NoteInsert))
-            .and_then(|b| b.register(OrderStep))
-            .and_then(|b| b.register(NfLow))
-            .and_then(|b| b.register(NfInsert))
-            .and_then(|b| b.finalize(pasta))
-            .map_err(|e| e.to_string())
-    })
-    .as_ref()
-    .map_err(|e| CircuitError::Plonk(format!("ragu root-binding application build: {e}")))
+    crate::ragu_app::wallet()
 }
 
 fn rng() -> UnwrapErr<SysRng> {

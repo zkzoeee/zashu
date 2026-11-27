@@ -41,7 +41,6 @@
 
 use std::sync::OnceLock;
 
-use ragu::circuits::polynomials::R;
 use ragu::drivers::{Driver, DriverValue};
 use ragu::gadgets::{Bound, Kind};
 use ragu::header::{Header, Padding, Suffix};
@@ -53,7 +52,7 @@ use ragu::primitives::{Boolean, Element, FixedBase, GadgetExt};
 use ragu::step::{Encoded, Index, Oracles, Step};
 use ragu::udon::curve::Affine;
 use ragu::udon::field::Field;
-use ragu::{Application, ApplicationBuilder, CompressedProof, Pcd};
+use ragu::{CompressedProof, Pcd};
 use rand::rand_core::UnwrapErr;
 use rand::rngs::SysRng;
 use zashu_acc::{InclusionWitness, NoteAccumulator, ACC_DEPTH};
@@ -73,11 +72,9 @@ use crate::predicates::{
 };
 use crate::ragu_gadgets::{fp_from_pasta, poseidon_hash, values_of};
 
-type Rank = R<14>;
-pub const RAGU_RANK: u32 = 14;
-/// Largest header payload (4) plus Ragu's suffix slot.
-const HEADER_SIZE: usize = 5;
-type App = Application<'static, Pasta, Rank, HEADER_SIZE>;
+use crate::ragu_app::{Rank, RAGU_RANK as APP_RANK};
+pub const RAGU_RANK: u32 = APP_RANK;
+type App = crate::ragu_app::WalletApp;
 
 /// Merkle levels proven per path step.
 const PATH_LEVELS: usize = 8;
@@ -86,10 +83,7 @@ const _: () = assert!(ACC_DEPTH % PATH_LEVELS == 0);
 /// Bits of a secret scalar (Pallas scalar field).
 const SK_BITS: usize = 255;
 
-/// Digest domain tags (see [`tx_digest`]).
-pub const TAG_SPEND: u64 = 0x21;
-pub const TAG_OUTPUT: u64 = 0x22;
-pub const TAG_NODE: u64 = 0x23;
+pub use crate::ragu_gadgets::{TAG_NODE, TAG_OUTPUT, TAG_SPEND};
 
 fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
     CircuitError::Plonk(format!("ragu {context}: {e}"))
@@ -102,7 +96,7 @@ fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
 macro_rules! header {
     ($(#[$doc:meta])* $name:ident, $suffix:expr, $n:expr) => {
         $(#[$doc])*
-        struct $name;
+        pub(crate) struct $name;
 
         impl Header<Fp> for $name {
             const SUFFIX: Suffix = Suffix::new($suffix);
@@ -123,24 +117,24 @@ macro_rules! header {
 
 header!(
     /// `[leaf, node, levels]`: `node` is the ancestor of `leaf` `levels` up.
-    Path, 0, 3
+    Path, 4, 3
 );
 header!(
     /// `[pk_fp]`: the prover knows `sk` with `pk_to_fp([sk] G) == pk_fp`.
-    Key, 1, 1
+    Key, 5, 1
 );
 header!(
     /// `[anchor, epoch, digest, balance]` of a partial transaction.
-    Part, 2, 4
+    Part, 6, 4
 );
 header!(
     /// `[k1, k2, k3]`: key images the prover holds the secret keys for; zero
     /// marks an unused slot.
-    Keys, 4, 3
+    Keys, 8, 3
 );
 header!(
     /// `[anchor, epoch, digest, balance]` of a finished transaction.
-    Tx, 3, 4
+    Tx, 7, 4
 );
 
 const ANCHOR: usize = 0;
@@ -188,7 +182,7 @@ fn alloc_u64<'dr, D: Driver<'dr, F = Fp>>(
 // --------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct PathWitness {
+pub(crate) struct PathWitness {
     leaf: Fp,
     siblings: [Fp; PATH_LEVELS],
     /// Bit `i` set: the running node is the right child at level `i`.
@@ -213,10 +207,10 @@ fn climb<'dr, D: Driver<'dr, F = Fp>>(
     Ok(cur)
 }
 
-struct PathStart;
+pub(crate) struct PathStart;
 
 impl Step<Pasta> for PathStart {
-    const INDEX: Index = Index::new(0);
+    const INDEX: Index = Index::new(10);
     type Witness<'source> = PathWitness;
     type Aux<'source> = ();
     type Left = ();
@@ -243,10 +237,10 @@ impl Step<Pasta> for PathStart {
     }
 }
 
-struct PathExtend;
+pub(crate) struct PathExtend;
 
 impl Step<Pasta> for PathExtend {
-    const INDEX: Index = Index::new(1);
+    const INDEX: Index = Index::new(11);
     type Witness<'source> = PathWitness;
     type Aux<'source> = ();
     type Left = Path;
@@ -287,10 +281,10 @@ fn generator_table() -> &'static FixedBase<EpAffine, SK_BITS> {
     })
 }
 
-struct KeyStep;
+pub(crate) struct KeyStep;
 
 impl Step<Pasta> for KeyStep {
-    const INDEX: Index = Index::new(2);
+    const INDEX: Index = Index::new(12);
     type Witness<'source> = [bool; SK_BITS];
     type Aux<'source> = ();
     type Left = ();
@@ -326,7 +320,7 @@ impl Step<Pasta> for KeyStep {
 // --------------------------------------------------------------------------
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SpendKind {
+pub(crate) enum SpendKind {
     Standard,
     P2pk,
     Timelock,
@@ -335,7 +329,7 @@ enum SpendKind {
 }
 
 #[derive(Clone, Copy)]
-struct SpendWitness {
+pub(crate) struct SpendWitness {
     value: u64,
     owner: Fp,
     params: Fp,
@@ -458,7 +452,7 @@ fn spend<'dr, D: Driver<'dr, F = Fp>>(
 
 macro_rules! spend_step {
     ($name:ident, $index:expr, $kind:expr) => {
-        struct $name;
+        pub(crate) struct $name;
 
         impl Step<Pasta> for $name {
             const INDEX: Index = Index::new($index);
@@ -490,18 +484,18 @@ macro_rules! spend_step {
     };
 }
 
-spend_step!(SpendStandard, 3, SpendKind::Standard);
-spend_step!(SpendP2pk, 4, SpendKind::P2pk);
-spend_step!(SpendTimelock, 5, SpendKind::Timelock);
-spend_step!(SpendHtlcClaim, 6, SpendKind::HtlcClaim);
-spend_step!(SpendHtlcRefund, 7, SpendKind::HtlcRefund);
+spend_step!(SpendStandard, 13, SpendKind::Standard);
+spend_step!(SpendP2pk, 14, SpendKind::P2pk);
+spend_step!(SpendTimelock, 15, SpendKind::Timelock);
+spend_step!(SpendHtlcClaim, 16, SpendKind::HtlcClaim);
+spend_step!(SpendHtlcRefund, 17, SpendKind::HtlcRefund);
 
 // --------------------------------------------------------------------------
 // Multisig: up to three key proofs against a committed key list
 // --------------------------------------------------------------------------
 
 /// Gathers one or two key proofs into a key set.
-struct KeysStart<const TWO: bool>;
+pub(crate) struct KeysStart<const TWO: bool>;
 
 macro_rules! keys_start {
     ($two:expr, $index:expr, $right:ty, $right_data:ty) => {
@@ -562,14 +556,14 @@ fn keys_second<'dr, D: Driver<'dr, F = Fp>, const TWO: bool>(
     right.second(dr)
 }
 
-keys_start!(false, 11, (), ());
-keys_start!(true, 12, Key, [Fp; 1]);
+keys_start!(false, 21, (), ());
+keys_start!(true, 22, Key, [Fp; 1]);
 
 /// Adds a third key proof to a key set.
-struct KeysExtend;
+pub(crate) struct KeysExtend;
 
 impl Step<Pasta> for KeysExtend {
-    const INDEX: Index = Index::new(13);
+    const INDEX: Index = Index::new(23);
     type Witness<'source> = ();
     type Aux<'source> = ();
     type Left = Keys;
@@ -599,7 +593,7 @@ impl Step<Pasta> for KeysExtend {
 }
 
 #[derive(Clone, Copy)]
-struct MultisigWitness {
+pub(crate) struct MultisigWitness {
     spend: SpendWitness,
     threshold: u64,
     key_count: u64,
@@ -609,10 +603,10 @@ struct MultisigWitness {
     selected: [[bool; MULTISIG_MAX_KEYS]; MULTISIG_MAX_SIGNERS],
 }
 
-struct SpendMultisig;
+pub(crate) struct SpendMultisig;
 
 impl Step<Pasta> for SpendMultisig {
-    const INDEX: Index = Index::new(14);
+    const INDEX: Index = Index::new(24);
     type Witness<'source> = MultisigWitness;
     type Aux<'source> = ();
     type Left = Path;
@@ -702,7 +696,7 @@ impl Step<Pasta> for SpendMultisig {
 // --------------------------------------------------------------------------
 
 #[derive(Clone, Copy)]
-struct OutputWitness {
+pub(crate) struct OutputWitness {
     value: u64,
     owner: Fp,
     predicate_id: u64,
@@ -714,10 +708,10 @@ struct OutputWitness {
     epoch: u64,
 }
 
-struct OutputStep;
+pub(crate) struct OutputStep;
 
 impl Step<Pasta> for OutputStep {
-    const INDEX: Index = Index::new(8);
+    const INDEX: Index = Index::new(18);
     type Witness<'source> = OutputWitness;
     type Aux<'source> = ();
     type Left = ();
@@ -757,10 +751,10 @@ impl Step<Pasta> for OutputStep {
     }
 }
 
-struct MergeStep;
+pub(crate) struct MergeStep;
 
 impl Step<Pasta> for MergeStep {
-    const INDEX: Index = Index::new(9);
+    const INDEX: Index = Index::new(19);
     type Witness<'source> = ();
     type Aux<'source> = ();
     type Left = Part;
@@ -798,10 +792,10 @@ impl Step<Pasta> for MergeStep {
 
 /// Re-labels a finished part as a transaction. Every published proof is a
 /// `Finalize` proof, so its circuit identity says nothing about the spends.
-struct FinalizeStep;
+pub(crate) struct FinalizeStep;
 
 impl Step<Pasta> for FinalizeStep {
-    const INDEX: Index = Index::new(10);
+    const INDEX: Index = Index::new(20);
     type Witness<'source> = ();
     type Aux<'source> = ();
     type Left = Part;
@@ -833,30 +827,7 @@ impl Step<Pasta> for FinalizeStep {
 // --------------------------------------------------------------------------
 
 fn app() -> Result<&'static App> {
-    static APP: OnceLock<std::result::Result<App, String>> = OnceLock::new();
-    APP.get_or_init(|| {
-        let pasta = ragu::pcd::pasta::baked();
-        ApplicationBuilder::<Pasta, Rank, HEADER_SIZE>::new()
-            .register(PathStart)
-            .and_then(|b| b.register(PathExtend))
-            .and_then(|b| b.register(KeyStep))
-            .and_then(|b| b.register(SpendStandard))
-            .and_then(|b| b.register(SpendP2pk))
-            .and_then(|b| b.register(SpendTimelock))
-            .and_then(|b| b.register(SpendHtlcClaim))
-            .and_then(|b| b.register(SpendHtlcRefund))
-            .and_then(|b| b.register(OutputStep))
-            .and_then(|b| b.register(MergeStep))
-            .and_then(|b| b.register(FinalizeStep))
-            .and_then(|b| b.register(KeysStart::<false>))
-            .and_then(|b| b.register(KeysStart::<true>))
-            .and_then(|b| b.register(KeysExtend))
-            .and_then(|b| b.register(SpendMultisig))
-            .and_then(|b| b.finalize(pasta))
-            .map_err(|e| e.to_string())
-    })
-    .as_ref()
-    .map_err(|e| CircuitError::Plonk(format!("ragu mode B application build: {e}")))
+    crate::ragu_app::wallet()
 }
 
 fn rng() -> UnwrapErr<SysRng> {
