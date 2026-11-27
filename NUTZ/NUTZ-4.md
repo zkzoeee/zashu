@@ -29,7 +29,7 @@ In standard Cashu (`NUT-10`, `NUT-11`, `NUT-14`), P2PK keys, timelocks, and HTLC
 
 A spend does not fit in one Ragu step, so a transaction is a small tree of steps fused into one proof:
 
-1. **Path** (4 steps of 8 levels): the note commitment is a leaf under `anchor_root`.
+1. **Path** (3 steps of 8 levels): the note commitment is a leaf under `anchor_root`.
 2. **Key**: knowledge of `sk`, exposing `K([sk]G)`.
 3. **Spend** (one circuit per predicate and branch): opens the note commitment, derives the nullifier, and enforces the predicate against the key proof. For `Multisig`, up to three key proofs are first gathered into a key set; the spend checks each is a distinct member of the committed list and that there are at least $t$.
 4. **Output**: opens each output commitment and range-checks its value.

@@ -247,7 +247,7 @@ impl Circuit<Fp> for ZkMintCircuit {
 
 /// Unified `ZkSwapCircuit` (`k = 13`):
 /// Proves in a single Halo 2 proof:
-/// 1. In-circuit 32-level Poseidon Merkle inclusion of private `primary_in_cm` in public `anchor_root_fp`.
+/// 1. In-circuit 24-level Poseidon Merkle inclusion of private `primary_in_cm` in public `anchor_root_fp`.
 /// 2. 64-bit unsigned range checks on all `k <= 4` inputs and `m <= 4` outputs.
 /// 3. Value conservation `sum(in) == sum(out)`.
 /// Public instances: `[anchor_root_fp, nf_0..3, cm_out_0..3]`.
@@ -342,7 +342,7 @@ impl Circuit<Fp> for ZkSwapCircuit {
             },
         )?;
 
-        // In-circuit 32-level Poseidon Merkle inclusion of primary input note
+        // In-circuit 24-level Poseidon Merkle inclusion of primary input note
         cfg.poseidon.verify_merkle_inclusion(
             layouter.namespace(|| "zk_swap_merkle"),
             prim_cm_c,
@@ -361,7 +361,7 @@ impl Circuit<Fp> for ZkSwapCircuit {
 }
 
 /// Unified `ZkMeltCircuit` (`k = 13`):
-/// Proves in-circuit 32-level Poseidon Merkle inclusion + `sum(in) == public_melt_amount + change_val` + 64-bit range checks.
+/// Proves in-circuit 24-level Poseidon Merkle inclusion + `sum(in) == public_melt_amount + change_val` + 64-bit range checks.
 /// Public instances: `[anchor_root_fp, public_melt_amount, change_cm_fp, nf_0..3]`.
 #[derive(Debug, Clone)]
 pub struct ZkMeltCircuit {

@@ -2,11 +2,11 @@
 //! `NUTZ-4` hidden predicates (`ragu` feature).
 //!
 //! A full spend does not fit in one Ragu step (about 4,095 gates at rank 14;
-//! a 32-level Poseidon Merkle path alone needs far more), so a transaction is
+//! a 24-level Poseidon Merkle path alone needs far more), so a transaction is
 //! a small tree of steps:
 //!
 //! ```text
-//!  PathStart -> PathExtend x3 --\
+//!  PathStart -> PathExtend x2 --\
 //!                                 Spend<predicate> -- Merge -> ... -> Close
 //!  Key --------------------------/
 //! ```

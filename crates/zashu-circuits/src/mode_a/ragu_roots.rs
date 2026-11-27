@@ -73,7 +73,7 @@ type App = crate::ragu_app::WalletApp;
 
 /// Merkle levels proven per update step (each level hashes twice: old and new).
 const UPD_LEVELS: usize = 4;
-const _: () = assert!(ACC_DEPTH % UPD_LEVELS == 0 && ACC_DEPTH == 32);
+const _: () = assert!(ACC_DEPTH % UPD_LEVELS == 0 && ACC_DEPTH < 64);
 
 macro_rules! header {
     ($(#[$doc:meta])* $name:ident, $suffix:expr, $n:expr) => {

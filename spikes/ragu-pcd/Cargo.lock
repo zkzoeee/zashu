@@ -556,5 +556,6 @@ name = "zashu-ragu-spike"
 version = "0.0.0"
 dependencies = [
  "ragu",
+ "ragu_pcd",
  "rand",
 ]

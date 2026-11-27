@@ -260,7 +260,7 @@ impl PoseidonChipConfig {
         self.hash_3(layouter.namespace(|| "acc_hash_3"), [dom, left, right])
     }
 
-    /// Enforces 32-level Poseidon Merkle inclusion from `leaf` up to `expected_root`.
+    /// Enforces 24-level Poseidon Merkle inclusion from `leaf` up to `expected_root`.
     pub fn verify_merkle_inclusion(
         &self,
         mut layouter: impl Layouter<Fp>,
@@ -317,7 +317,7 @@ impl PoseidonChipConfig {
     }
 }
 
-/// Standalone Halo 2 circuit (`k = 13`) proving 32-level Poseidon Merkle inclusion in-circuit.
+/// Standalone Halo 2 circuit (`k = 13`) proving 24-level Poseidon Merkle inclusion in-circuit.
 /// Public instances: `[leaf, root]`.
 #[derive(Debug, Clone)]
 pub struct MerkleInclusionCircuit {

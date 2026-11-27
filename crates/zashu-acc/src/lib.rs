@@ -4,7 +4,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zashu_core::poseidon::hash_acc_node;
 
-pub const ACC_DEPTH: usize = 32;
+/// Depth of both accumulator trees: each holds up to `2^24` (about 16.7
+/// million) leaves over the mint's lifetime. Every Merkle level costs proving
+/// time on the Ragu backend, which walks 8 levels per transaction step and 4
+/// per fold step, so the depth must stay a multiple of 8.
+pub const ACC_DEPTH: usize = 24;
 
 #[derive(Debug, Error)]
 pub enum AccError {

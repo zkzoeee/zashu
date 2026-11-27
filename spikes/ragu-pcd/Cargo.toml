@@ -11,6 +11,8 @@ publish = false
 
 [dependencies]
 ragu = { git = "https://github.com/tachyon-zcash/ragu", rev = "a812865ff7aa8c2d546c7019f0a822ea8c1aa5a9", features = ["baked"] }
+# Only for the rank-15 generators that `rank_probe` needs.
+ragu_pcd = { git = "https://github.com/tachyon-zcash/ragu", rev = "a812865ff7aa8c2d546c7019f0a822ea8c1aa5a9", features = ["baked-aggregator"] }
 rand = { version = "0.10", default-features = false, features = ["std_rng"] }
 
 [profile.release]
