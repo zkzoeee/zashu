@@ -50,7 +50,9 @@ pub enum SubcircuitId {
 pub struct FoldedProof {
     pub subcircuit: SubcircuitId,
     pub k: u32,
+    #[serde(with = "wire::hex_vec")]
     pub public_inputs: Vec<[u8; 32]>,
+    #[serde(with = "wire::base64_bytes")]
     pub ipa_proof: Vec<u8>,
     pub folded_children: usize,
     /// Mode A step proofs only: the mint states this step moves between. The
@@ -58,6 +60,73 @@ pub struct FoldedProof {
     /// hashes in-circuit. Not part of the proof and absent on folded proofs.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub transition: Option<Box<StateTransition>>,
+}
+
+/// Compact JSON encodings for proof bytes. serde's default writes a byte
+/// vector as an array of numbers, about 3.6x its size; these write base64
+/// and hex strings instead. Both still read the old array form.
+mod wire {
+    use serde::{Deserialize, Deserializer, Serializer};
+
+    pub mod base64_bytes {
+        use base64::engine::general_purpose::STANDARD;
+        use base64::Engine;
+
+        use super::*;
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(String),
+            Raw(Vec<u8>),
+        }
+
+        pub fn serialize<S: Serializer>(bytes: &[u8], s: S) -> Result<S::Ok, S::Error> {
+            s.serialize_str(&STANDARD.encode(bytes))
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<u8>, D::Error> {
+            match Either::deserialize(d)? {
+                Either::Text(t) => STANDARD.decode(t).map_err(serde::de::Error::custom),
+                Either::Raw(b) => Ok(b),
+            }
+        }
+    }
+
+    pub mod hex_vec {
+        use serde::ser::SerializeSeq;
+        use serde::Serialize;
+        use zashu_core::field::hex32;
+
+        use super::*;
+
+        #[derive(Serialize, Deserialize)]
+        struct Hex(#[serde(with = "hex32")] [u8; 32]);
+
+        #[derive(Deserialize)]
+        #[serde(untagged)]
+        enum Either {
+            Text(Hex),
+            Raw([u8; 32]),
+        }
+
+        pub fn serialize<S: Serializer>(items: &[[u8; 32]], s: S) -> Result<S::Ok, S::Error> {
+            let mut seq = s.serialize_seq(Some(items.len()))?;
+            for item in items {
+                seq.serialize_element(&Hex(*item))?;
+            }
+            seq.end()
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<[u8; 32]>, D::Error> {
+            Ok(Vec::<Either>::deserialize(d)?
+                .into_iter()
+                .map(|e| match e {
+                    Either::Text(Hex(b)) | Either::Raw(b) => b,
+                })
+                .collect())
+        }
+    }
 }
 
 /// The mint states before and after one Mode A step.

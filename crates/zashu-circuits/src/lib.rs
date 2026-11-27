@@ -320,4 +320,32 @@ mod tests {
         // Tampered leaf must fail
         assert!(crate::mode_b::verify_merkle_inclusion(&proof, &cm2, &root).is_err());
     }
+
+    #[test]
+    fn proof_wire_encoding_is_compact_and_reads_the_old_form() {
+        let s0 = MintState::genesis([0u8; 32], [0u8; 32]);
+        let mut s1 = s0.clone();
+        s1.epoch = 1;
+        s1.total_liabilities = 5;
+        s1.event_log_hash = hash_event_mint(&s0.event_log_hash, &[1u8; 32], 5);
+        let mut proof = prove_mint_step(&s0, &s1, 5).unwrap();
+        proof.transition = None;
+
+        // New form: strings, and far smaller than a JSON array of numbers.
+        let json = serde_json::to_string(&proof).unwrap();
+        assert!(json.contains("\"ipa_proof\":\""));
+        assert!(json.len() < proof.ipa_proof.len() * 2, "{} vs {}", json.len(), proof.ipa_proof.len());
+        assert_eq!(serde_json::from_str::<crate::FoldedProof>(&json).unwrap(), proof);
+        assert_eq!(crate::FoldedProof::from_base64(&proof.to_base64().unwrap()).unwrap(), proof);
+
+        // Old form: byte arrays as arrays of numbers.
+        let old = serde_json::json!({
+            "subcircuit": "MintStep",
+            "k": proof.k,
+            "public_inputs": proof.public_inputs.iter().map(|b| b.to_vec()).collect::<Vec<_>>(),
+            "ipa_proof": proof.ipa_proof,
+            "folded_children": proof.folded_children,
+        });
+        assert_eq!(serde_json::from_value::<crate::FoldedProof>(old).unwrap(), proof);
+    }
 }
