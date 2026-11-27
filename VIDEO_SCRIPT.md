@@ -30,6 +30,8 @@
 | 0:51.7–0:55.7 | **Numbers** | "Measured, not promised." **1 ms** · **~16 KB** · **−49.6%** · **0 sat**. | — | clinks |
 | 0:55.7–1:01.2 | **Outro** | The crew pops in from the center out (7 in landscape, 5 in vertical). **Zashu** wordmark, "Cashu speed. Shinobi privacy.", `cargo run --release -p zashu-mint` → `localhost:8080/playground`. | — | ticks, thump, chime |
 
+> **Numbers in the rendered video predate the current build.** The video shows a 16 KB solvency proof verified in 1 ms. Today the default Halo 2 proof is 3.4 KB, verified in about 2 ms, and the opt-in Ragu proof is 6.2 KB, verified in about 70 ms. Zashu supports both backends; a re-render should say so and use these figures.
+
 A **Cashu-native · Shield · Stealth · Safety · Solvency** progress bar runs across the middle scenes.
 
 ## Music (`scripts/make-music.py`)

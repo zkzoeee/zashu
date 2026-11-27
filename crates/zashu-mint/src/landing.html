@@ -435,7 +435,7 @@
     <section class="hero">
       <div class="petals" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i></div>
       <div>
-        <span class="tag">Built for Cashu · Ragu PCD · Tachyon Accumulators · Halo 2</span>
+        <span class="tag">Built for Cashu · Halo 2 &amp; Ragu PCD · Tachyon Accumulators</span>
         <h1>Zero-Knowledge <span>Solvency &amp; Shielded Ecash</span> for Cashu.</h1>
         <p>
           Cashu's blind signatures are unbeatable for instant &lt;50ms coffee payments.
@@ -458,8 +458,9 @@
 
     <!-- Trust / Benchmark Bar -->
     <div class="trust-bar">
-      <div class="trust-stat"><b>~70 ms</b><span>NUTZ-1 Solvency Verification</span></div>
-      <div class="trust-stat"><b>~6 KB</b><span>Constant-Size Solvency Proof</span></div>
+      <div class="trust-stat"><b>2 Backends</b><span>Halo 2 (default) &amp; Ragu PCD (opt-in)</span></div>
+      <div class="trust-stat"><b>~2 ms</b><span>Solvency Verification (Halo 2; ~70 ms Ragu)</span></div>
+      <div class="trust-stat"><b>3–6 KB</b><span>Solvency Proof (3.4 KB Halo 2, 6.2 KB Ragu)</span></div>
       <div class="trust-stat"><b>49.6%</b><span>Pruned Mint State (10k Spends)</span></div>
       <div class="trust-stat"><b>0 Soft Forks</b><span>Drop-In CDK &amp; Cashu Interop</span></div>
     </div>
@@ -513,9 +514,9 @@
           <h3>What Zashu Adds to Cashu</h3>
           <ul>
             <li><b>Verifiable Solvency (<code>NUTZ-1</code>):</b> Drop-in sidecar proving <code>liabilities ≤ L1 reserves</code> for <i>all</i> Cashu + Zashu tokens.</li>
-            <li><b>Arbitrary Amounts (<code>NUTZ-2</code>):</b> Hidden values in 1 Pedersen commitment—no power-of-2 splitting.</li>
+            <li><b>Arbitrary Amounts (<code>NUTZ-2</code>):</b> Hidden values in one Poseidon note commitment—no power-of-2 splitting.</li>
             <li><b>Offline-Safe Stealth (<code>NUTZ-3</code>):</b> Double-spend-proof <code>zsp1...</code> receives + oblivious witness sync.</li>
-            <li><b>Hidden Predicates (<code>NUTZ-4</code>):</b> Private P2PK, Multisig, Timelocks &amp; Cross-Mint Atomic Swaps.</li>
+            <li><b>Hidden Predicates (<code>NUTZ-4</code>):</b> Private P2PK, Multisig, Timelocks &amp; Cross-Mint Atomic Swaps—enforced inside the proof on the Ragu backend, checked by the wallet on Halo 2.</li>
           </ul>
         </div>
       </div>
@@ -526,7 +527,7 @@
       <div class="section-head">
         <span class="jp-eyebrow"><b lang="ja">仕組み</b> how it works</span>
         <h2>How Zashu Works Under the Hood</h2>
-        <p>Four clean cryptographic layers combining <b>Ragu</b> non-uniform PCD folding, <b>Tachyon</b> prunable accumulators, and Halo 2 (Pasta/IPA, no trusted setup).</p>
+        <p>Four clean cryptographic layers on <b>two interchangeable proof backends</b>: <b>Halo 2</b> (default; Pasta/IPA, no trusted setup) and <b>Ragu</b> non-uniform PCD (opt-in, recursive), with <b>Tachyon</b> prunable accumulators. One mint binary carries both; <code>ZASHU_PCD_BACKEND</code> picks one.</p>
       </div>
       <div class="arch-grid">
         <div class="arch-card">
@@ -537,7 +538,7 @@
         <div class="arch-card">
           <span class="tag-sm">LAYER 2 · NUTZ-2 UNIFIED k=13</span>
           <h3>Single-Proof Note Swaps</h3>
-          <p>One Halo 2 proof enforces 24-level Poseidon Merkle membership, 64-bit range checks, and Pedersen value balance without revealing amounts.</p>
+          <p>One proof enforces 24-level Poseidon Merkle membership, 64-bit range checks, and value balance without revealing amounts. The Ragu backend also binds every note opening, nullifier and spending policy.</p>
         </div>
         <div class="arch-card">
           <span class="tag-sm">LAYER 3 · TACHYON PRUNING</span>
@@ -653,6 +654,25 @@
           </ul>
         </div>
       </div>
+      <div class="compare">
+        <div class="compare-box zashu">
+          <h3>Two Backends, One Spec (<code>NUTZ-0</code>)</h3>
+          <ul>
+            <li><b>Zashu supports both Halo 2 and Ragu.</b> <code>NUTZ-0</code> fixes <i>what</i> a proof must show—notes, keys, policies, a two-input, two-output transaction, and each change to the mint's state—so either backend can prove it.</li>
+            <li><b>Tested the same way:</b> a plain-Rust reference checker and shared forgery vectors. Both backends accept every valid case and reject every forgery.</li>
+            <li><b>Status:</b> both backends implement <code>NUTZ-0</code> today; this demo's mint still runs the earlier circuits and moves onto it next.</li>
+          </ul>
+        </div>
+        <div class="compare-box">
+          <h3>Measured Like for Like</h3>
+          <ul>
+            <li><b>Shielded swap:</b> Halo 2 <b>0.25 s</b> · Ragu <b>3.3 s</b> to prove (laptop).</li>
+            <li><b>One mint operation</b> (2 nullifiers, 2 notes): Halo 2 <b>0.6 s</b> · Ragu <b>11 s</b>.</li>
+            <li><b>History of 16 operations:</b> Halo 2 <b>116 KB</b>, growing with every operation · Ragu <b>6.2 KB</b>, constant, verified in ~75 ms.</li>
+            <li><b>Pick by need:</b> Halo 2 for speed; Ragu for one constant-size proof of the mint's whole history. Ragu is unreleased and unaudited upstream.</li>
+          </ul>
+        </div>
+      </div>
     </section>
 
     <!-- 4. Meet Zashi -->
@@ -717,7 +737,7 @@
     </div>
 
     <footer>
-      <div><span class="wordmark">Zashu</span> <span lang="ja">ザシュ</span> — Rust · Halo 2 (Pasta/IPA) · Tachyon Accumulators · NUTZ-1..4</div>
+      <div><span class="wordmark">Zashu</span> <span lang="ja">ザシュ</span> — Rust · Halo 2 &amp; Ragu PCD · Tachyon Accumulators · NUTZ-0..4</div>
       <div>Run locally: <code>cargo run --release -p zashu-mint</code></div>
     </footer>
   </div>

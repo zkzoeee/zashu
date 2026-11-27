@@ -399,7 +399,7 @@
       </div>
       <div class="row">
         <input id="send-amt" type="number" value="37" min="1" />
-        <button id="btn-send" class="amber" onclick="act('/v1/demo/stealth_send', {amount: +val('send-amt')}, 'Generating k=13 unified Merkle + balance proof...')">Stealth Send to Bob</button>
+        <button id="btn-send" class="amber" onclick="act('/v1/demo/stealth_send', {amount: +val('send-amt')}, 'Generating shielded swap proof (Merkle membership + value balance)...')">Stealth Send to Bob</button>
         <button id="btn-ds" class="danger" onclick="doubleSpend()">Try Double-Spend!</button>
       </div>
       <div class="mono">Alice's Shielded Notes:</div>
@@ -421,7 +421,7 @@
       </div>
       <div class="row">
         <button id="btn-bob" class="primary" onclick="act('/v1/demo/bob_sync', {}, 'Running Oblivious Sync & decrypting stealth memos...')">Come Online &amp; Oblivious Sync</button>
-        <button id="btn-bob-melt" class="amber" onclick="act('/v1/demo/bob_melt', {}, 'Generating k=13 unified ZkMelt proof to pay Lightning...')">Melt Note (Pay LN)</button>
+        <button id="btn-bob-melt" class="amber" onclick="act('/v1/demo/bob_melt', {}, 'Generating shielded melt proof to pay Lightning...')">Melt Note (Pay LN)</button>
       </div>
       <div class="mono">Bob's Decrypted Notes:</div>
       <div class="list" id="bob-notes"></div>
