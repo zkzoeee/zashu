@@ -9,7 +9,7 @@
 ## 1. Motivation
 In standard Cashu (`NUT-10`, `NUT-11`, `NUT-14`), P2PK keys, timelocks, and HTLC hashlocks are stored in plaintext JSON inside `secret`, allowing the mint to observe every spending policy.
 
-`NUTZ-4` uses **Ragu’s non-uniform PCD** to hide spending predicates inside the note commitment (`predicate_id`, `predicate_params_hash`). When spending a note, the client proves satisfaction of the predicate’s dedicated subcircuit—the mint verifies only the opaque `zk_swap`/`zk_melt` proof and **never learns which predicate was used**.
+`NUTZ-4` uses **Ragu’s non-uniform PCD** to hide spending predicates inside the note commitment (`predicate_id`, `predicate_params_hash`). When spending a note, the client proves satisfaction of the predicate’s dedicated subcircuit—the mint verifies only the `zk_swap`/`zk_melt` proof and **is never sent the predicate or its parameters**. Proofs for every predicate have the same shape. That a proof leaks nothing about which predicate ran depends on Ragu's rerandomization being hiding, which Ragu has not yet proven (§2.1); until then this is a design goal, not a guarantee.
 
 ---
 
@@ -50,7 +50,7 @@ A spend does not fit in one Ragu step, so a transaction is a small tree of steps
 2. **Secret:** Alice samples random 32-byte `preimage` and computes `hashlock = Poseidon2(DOMAIN_STEALTH, hash_to_field(preimage))`.
 3. **Lock on Mint A:** Alice calls `POST /v1/zk/swap` on Mint A creating a `0x04` (`PrivateHTLC`) note payable to Bob (`hashlock`, `expiry = E_A + 20`) and sends Bob the encrypted note memo (`NUTZ-3`).
 4. **Lock on Mint B:** Bob verifies the note exists in Mint A's `note_acc_root`, then calls `POST /v1/zk/swap` on Mint B creating a matching `0x04` note payable to Alice (`hashlock`, `expiry = E_B + 10`).
-5. **Claim on Mint B:** Alice claims Bob's note on Mint B using `preimage` (revealing `preimage` to Bob out-of-band, or via encrypted swap receipt—**Mint B still never sees the hashlock or preimage**).
+5. **Claim on Mint B:** Alice claims Bob's note on Mint B using `preimage` (revealing `preimage` to Bob out-of-band, or via encrypted swap receipt—**the hashlock and preimage are never sent to Mint B**).
 6. **Claim on Mint A:** Bob uses `preimage` to claim Alice's note on Mint A.
 
 ### Interoperability with CMYK / Satachy / Zark
