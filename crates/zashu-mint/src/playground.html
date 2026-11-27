@@ -369,7 +369,7 @@
   <div class="stepper" id="stepper">
     <div class="step active" id="st-1"><span class="kanji-num" lang="ja" aria-hidden="true">一</span><div><b>1. Mint Arbitrary Note</b>Create 137 sats in 1 single note</div></div>
     <div class="step" id="st-2"><span class="kanji-num" lang="ja" aria-hidden="true">二</span><div><b>2. Shield Legacy Cashu</b>Merge 128+8+1 tokens (0 LN fee)</div></div>
-    <div class="step" id="st-3"><span class="kanji-num" lang="ja" aria-hidden="true">三</span><div><b>3. Stealth Send (Offline)</b>Unified k=13 swap to Bob's zsp1</div></div>
+    <div class="step" id="st-3"><span class="kanji-num" lang="ja" aria-hidden="true">三</span><div><b>3. Stealth Send (Offline)</b>Shielded swap to Bob's zsp1</div></div>
     <div class="step" id="st-4"><span class="kanji-num" lang="ja" aria-hidden="true">四</span><div><b>4. Try Double-Spend</b>Replay nullifier &amp; watch mint block</div></div>
     <div class="step" id="st-5"><span class="kanji-num" lang="ja" aria-hidden="true">五</span><div><b>5. Bob Syncs &amp; Audit</b>Oblivious sync + NUTZ-1 verification</div></div>
   </div>
@@ -452,7 +452,7 @@
         <h2>NUTZ-1 Solvency Auditor</h2>
         <span class="badge ok hanko" id="audit-badge">SOLVENT</span>
       </div>
-      <div class="mono">Independent watchdog verifying <code>Proof of Liabilities ≤ L1 Reserves</code></div>
+      <div class="mono" style="word-break: normal; overflow-wrap: break-word;">Independent watchdog verifying <code>Proof of Liabilities ≤ L1 Reserves</code></div>
       <div class="item" id="audit-summary">Verifying...</div>
       <div class="row">
         <button onclick="runAudit(false)">Verify Honest Mint</button>
@@ -604,7 +604,9 @@
           headers: apiHeaders(),
           body: JSON.stringify({ tamper_fractional: tamper })
         });
-        renderAudit(await r.json());
+        const audit = await r.json();
+        renderAudit(audit);
+        toast(audit.solvent ? `Audit passed in ${audit.verify_ms} ms.` : `Audit rejected: ${audit.error}`);
       } finally {
         setBusy(false);
       }

@@ -401,7 +401,7 @@ impl PlaygroundSession {
         self.xray_logs.insert(
             0,
             XRayLogEntry {
-                endpoint: "POST /v1/zk/swap (Unified k=13 Proof)".into(),
+                endpoint: "POST /v1/zk/swap (Shielded Swap Proof)".into(),
                 summary: format!(
                     "Single-proof stealth swap confirmed (Bob offline, leaf #{}) in {}ms",
                     res.leaf_indices[0], self.last_action_ms
@@ -551,7 +551,7 @@ impl PlaygroundSession {
         self.xray_logs.insert(
             0,
             XRayLogEntry {
-                endpoint: "POST /v1/zk/melt (Unified k=13 Proof)".into(),
+                endpoint: "POST /v1/zk/melt (Shielded Melt Proof)".into(),
                 summary: format!(
                     "Bob melted {} sats to Lightning invoice in {}ms (liabilities decremented)",
                     inp.note.value, self.last_action_ms
