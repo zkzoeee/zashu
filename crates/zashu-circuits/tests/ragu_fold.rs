@@ -1,5 +1,5 @@
 //! Mode A fold through the Ragu backend without root bindings
-//! (`FoldBackend::RaguUnbound`). The default, root-binding fold is covered in
+//! (`FoldBackend::RaguUnbound`). The root-binding fold is covered in
 //! `ragu_roots.rs`.
 //! Run with: `cargo test --release -p zashu-circuits --test ragu_fold`
 #![cfg(feature = "ragu")]

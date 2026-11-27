@@ -8,7 +8,7 @@
 ## 1. Motivation
 In standard Chaumian ecash, blind signatures prevent a mint from linking users, but give users **no cryptographic assurance** that the mint is not running a fractional reserve (printing unbacked ecash). Additionally, mints must retain every spent token secret forever, causing unbounded storage growth.
 
-`NUTZ-1` defines a verifiable, constant-size **ZK Solvency Bundle** (`Proof of Liabilities <= Proof of Reserves`) produced by folding the mint's step proofs (recursively with the default Ragu backend, as a batch proof with the fallback Halo 2 backend; see §2.1) alongside a prunable epoch nullifier accumulator.
+`NUTZ-1` defines a verifiable, constant-size **ZK Solvency Bundle** (`Proof of Liabilities <= Proof of Reserves`) produced by folding the mint's step proofs (as a batch proof with the default Halo 2 backend, recursively with the opt-in Ragu backend; see §2.1) alongside a prunable epoch nullifier accumulator.
 
 ---
 
@@ -36,7 +36,7 @@ At the end of every epoch $E$, the mint commits to a deterministic `MintState`:
 
 `state_hash = Poseidon3(Poseidon4(DOMAIN_STATE, epoch, total_liabilities, nullifier_acc_root), note_acc_root, event_log_hash)`.
 
-* **Ragu backend** (default): a mint operation is proven as a chain of single-purpose transitions between state hashes, each opened in-circuit, and a recursive fold step enforces that consecutive transitions chain on state hash and liabilities. The published proof attests the whole chain from the genesis state to the current one.
+* **Ragu backend** (`ZASHU_PCD_BACKEND=ragu`): a mint operation is proven as a chain of single-purpose transitions between state hashes, each opened in-circuit, and a recursive fold step enforces that consecutive transitions chain on state hash and liabilities. The published proof attests the whole chain from the genesis state to the current one.
   * **Value** (one per operation): the epoch does not decrease; liabilities follow the operation's kind (mint adds, melt subtracts, swap conserves); a mint or melt extends the event log with `Poseidon4(log, DOMAIN, quote_hash, amount)` where `amount` is exactly the change in liabilities, and a swap leaves the log alone. Both roots stay fixed.
   * **Note insert** (one per output): the note root changes by writing a commitment into a previously empty leaf. Notes can only be appended.
   * **Nullifier insert** (one per nullifier): a sorted indexed-Merkle-tree insertion. The low leaf satisfies `low.val < nf < low.next_val` (or has no successor) in the accumulator's byte order, is re-pointed at `nf`, and the new leaf is appended into an empty slot. Nullifiers can only be added, never removed or reordered.
@@ -47,7 +47,7 @@ At the end of every epoch $E$, the mint commits to a deterministic `MintState`:
   * Every other operation is accepted and counted in `unbound_ops`: legacy BDHKE mints and melts, shield and unshield, transactions built on the Halo 2 backend, and spends against an older anchor. An auditor decides how many unbound operations it tolerates; a shielded-only mint can reach zero.
   * The anchor rule is strict because the state does not yet commit to a history of note roots.
 * **Ragu backend without root bindings** (`ZASHU_PCD_BACKEND=ragu-unbound`): the same recursive fold, but each operation is a single step that checks liabilities and lets the roots and event log move freely. About 1 s per operation instead of tens of seconds.
-* **Halo 2 backend** (`ZASHU_PCD_BACKEND=halo2`): the folder verifies the step proofs itself and emits one proof whose public inputs are the start and end state hashes and liabilities. An auditor trusts the folder for the steps in between.
+* **Halo 2 backend** (default): the folder verifies the step proofs itself and emits one proof whose public inputs are the start and end state hashes and liabilities. An auditor trusts the folder for the steps in between.
 
 ---
 

@@ -356,15 +356,14 @@ fn mode_b_lifecycle_interop_stealth_and_cross_mint_swap() {
     let report_a = verify_solvency_bundle(&sol_a, &provider_a).unwrap();
     assert!(report_a.solvent);
     assert!(verify_solvency_bundle(&sol_b, &provider_b).unwrap().solvent);
-    // On the default backend the solvency proof attests every step and every
-    // event-log and root change this whole lifecycle made.
-    let default_backend =
-        std::env::var("ZASHU_PCD_BACKEND").is_err() && std::env::var("ZASHU_FOLD_BACKEND").is_err();
+    // On the root-binding Ragu backend the solvency proof attests every step
+    // and every event-log and root change this whole lifecycle made.
+    let ragu_backend = std::env::var("ZASHU_PCD_BACKEND").is_ok_and(|v| v.trim().eq_ignore_ascii_case("ragu"));
     eprintln!(
         "solvency proof: {} | steps proven={} roots bound={} ops={:?} unbound={:?}",
         report_a.fold_proof, report_a.steps_proven, report_a.roots_bound, report_a.ops, report_a.unbound_ops
     );
-    if cfg!(feature = "ragu") && default_backend {
+    if cfg!(feature = "ragu") && ragu_backend {
         assert!(report_a.steps_proven && report_a.roots_bound, "{}", report_a.fold_proof);
     }
 }

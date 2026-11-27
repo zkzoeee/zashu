@@ -639,8 +639,8 @@
           <h3>How Zero-Knowledge Works (In 3 Steps)</h3>
           <ul>
             <li><b>1. Hide with Commitments:</b> Your note's exact amount (<code>137 sats</code>), owner key, and spending policy are locked inside a <b>Poseidon hash</b> commitment—binding mathematically, and never sent to the mint in the clear.</li>
-            <li><b>2. Prove Rules Without Data:</b> Spending creates one compact proof. Built with <b>Ragu</b> PCD, it proves: (a) your note is in the mint's Merkle tree, (b) inputs equal outputs with 64-bit overflow protection, and (c) you satisfy the hidden policy. A fallback <b>Halo 2 (Pasta/IPA)</b> backend proves membership and balance only.</li>
-            <li><b>3. Fold &amp; Prune (Ragu + Tachyon):</b> The mint recursively folds every transition into <b>one ~6 KB <code>NUTZ-1</code> proof</b>, while Tachyon accumulators prune old nullifiers so storage stays flat.</li>
+            <li><b>2. Prove Rules Without Data:</b> Spending creates one compact proof. The default <b>Halo 2 (Pasta/IPA)</b> backend proves (a) your note is in the mint's Merkle tree and (b) inputs equal outputs with 64-bit overflow protection. The opt-in <b>Ragu</b> PCD backend also proves (c) you satisfy the hidden policy.</li>
+            <li><b>3. Fold &amp; Prune (Ragu + Tachyon):</b> The mint folds every transition into <b>one compact <code>NUTZ-1</code> proof</b> (~3 KB with Halo 2, ~6 KB and fully recursive with Ragu), while Tachyon accumulators prune old nullifiers so storage stays flat.</li>
           </ul>
         </div>
         <div class="compare-box">

@@ -1,5 +1,5 @@
 //! Ragu fold for the Mode A solvency proof that also binds how the event log,
-//! nullifier root and note root change (`FoldBackend::Ragu`, the default).
+//! nullifier root and note root change (`FoldBackend::Ragu`).
 //!
 //! The simpler fold in [`ragu_backend`](super::ragu_backend) opens each step's
 //! state hashes but lets the two roots and the event log move freely. Here a

@@ -1,4 +1,4 @@
-//! The default Ragu fold binds event-log, nullifier-root and note-root changes.
+//! The Ragu fold binds event-log, nullifier-root and note-root changes.
 //! Run with: `cargo test --release -p zashu-circuits --test ragu_roots`
 #![cfg(feature = "ragu")]
 

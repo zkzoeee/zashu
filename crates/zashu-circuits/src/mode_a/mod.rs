@@ -23,7 +23,7 @@ pub mod ragu_roots;
 
 /// Environment variable read by [`FoldBackend::from_env`]: `ragu`,
 /// `ragu-aggregated`, `ragu-unbound` or `halo2`.
-/// Unset selects Ragu when it is compiled in (the default build), else Halo 2.
+/// Unset selects Halo 2.
 pub const PCD_BACKEND_ENV: &str = "ZASHU_PCD_BACKEND";
 /// Older name for [`PCD_BACKEND_ENV`], still honoured when that one is unset.
 pub const FOLD_BACKEND_ENV: &str = "ZASHU_FOLD_BACKEND";
@@ -35,13 +35,13 @@ pub const FOLD_BACKEND_ENV: &str = "ZASHU_FOLD_BACKEND";
 pub enum FoldBackend {
     /// Steps are verified natively by the folder; the folded Halo 2 proof only
     /// exposes the endpoints as public inputs.
-    #[cfg_attr(not(feature = "ragu"), default)]
+    /// This is the default backend.
+    #[default]
     Halo2,
     /// Recursive Ragu PCD: the folded proof attests every step and the chaining
     /// between them, including how the event log, nullifier root and note root
-    /// change. Requires the `ragu` cargo feature, which is on by default; this
-    /// is then the default backend.
-    #[cfg_attr(feature = "ragu", default)]
+    /// change. Requires the `ragu` cargo feature, which is on by default, and
+    /// is selected with `ZASHU_PCD_BACKEND=ragu`.
     Ragu,
     /// Ragu PCD without the root bindings: each step opens its state hashes
     /// and checks liabilities, but roots and the event log move freely. Much

@@ -184,7 +184,7 @@ fn mode_b() -> Vec<Row> {
     rows
 }
 
-/// Cost of folding one mint operation with the default, root-binding Ragu
+/// Cost of folding one mint operation with the root-binding Ragu
 /// fold: each row is a single operation on live accumulators.
 fn bound_fold_ops() {
     use zashu_acc::NullifierAccumulator;

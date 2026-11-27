@@ -238,19 +238,20 @@ fn ragu_mint_refuses_halo2_transaction_proofs() {
     let n = note(21, pk, PredicateId::StandardSpend, [0u8; 32], 1);
     let blind = Fq::from(5u64);
 
-    std::env::set_var("ZASHU_PCD_BACKEND", "halo2");
+    // Halo 2 is the default backend when nothing is set.
+    std::env::remove_var("ZASHU_PCD_BACKEND");
+    std::env::remove_var("ZASHU_FOLD_BACKEND");
     let (cm, cv, halo2) = prove_zk_mint(&n, blind, 21).unwrap();
     assert_eq!(halo2.subcircuit, SubcircuitId::ZkMint);
     verify_zk_mint(&halo2, 21, &cm, &cv).unwrap();
 
-    // Ragu is the default backend when nothing is set.
-    std::env::remove_var("ZASHU_PCD_BACKEND");
-    std::env::remove_var("ZASHU_FOLD_BACKEND");
+    std::env::set_var("ZASHU_PCD_BACKEND", "ragu");
     assert!(verify_zk_mint(&halo2, 21, &cm, &cv).is_err());
     let (cm, cv, ragu) = prove_zk_mint(&n, blind, 21).unwrap();
     assert_eq!(ragu.subcircuit, SubcircuitId::RaguTx);
     verify_zk_mint(&ragu, 21, &cm, &cv).unwrap();
     assert!(verify_zk_mint(&ragu, 22, &cm, &cv).is_err());
+    std::env::remove_var("ZASHU_PCD_BACKEND");
 }
 
 #[test]

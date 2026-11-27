@@ -2,7 +2,7 @@
 
 * **Status:** Draft
 * **Mode:** Mode B (Non-Uniform Ragu Subcircuits)
-* **Implementation:** enforced in-circuit by the default Ragu backend for all five predicates (`0x02` for up to 4 keys and 3 signers). The fallback Halo 2 backend (`ZASHU_PCD_BACKEND=halo2`) checks the predicate in the wallet only.
+* **Implementation:** enforced in-circuit by the Ragu backend (`ZASHU_PCD_BACKEND=ragu`) for all five predicates (`0x02` for up to 4 keys and 3 signers). The default Halo 2 backend checks the predicate in the wallet only.
 
 ---
 

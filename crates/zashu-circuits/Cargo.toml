@@ -19,14 +19,15 @@ serde_json.workspace = true
 thiserror.workspace = true
 zashu-acc.workspace = true
 zashu-core.workspace = true
-# Ragu PCD backend, on by default. Unreleased and still being audited upstream
+# Ragu PCD backend, compiled in by default and selected at runtime. Unreleased and still being audited upstream
 # (crates.io only has 0.0.0 placeholders), so it is pinned to a commit.
 ragu = { git = "https://github.com/tachyon-zcash/ragu", rev = "a812865ff7aa8c2d546c7019f0a822ea8c1aa5a9", features = ["baked"], optional = true }
 
 [features]
 default = ["ragu"]
-# The Ragu backends (`mode_a::ragu_backend`, `mode_b::ragu_backend`) and the
-# default proof backend. Build with `--no-default-features` for Halo 2 only.
+# The Ragu backends (`mode_a::ragu_backend`, `mode_b::ragu_backend`), selected
+# with `ZASHU_PCD_BACKEND=ragu`. Build with `--no-default-features` to leave
+# them out.
 ragu = ["dep:ragu"]
 
 [dev-dependencies]
