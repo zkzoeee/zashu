@@ -47,27 +47,27 @@ use crate::ragu_gadgets::{fp_from_bytes, fp_from_pasta, poseidon_hash, values_of
 /// Ragu circuit rank (`2^14` constraints per step circuit).
 pub const RAGU_RANK: u32 = 14;
 
-type Rank = R<14>;
-const PAYLOAD: usize = 5;
+pub(super) type Rank = R<14>;
+pub(super) const PAYLOAD: usize = 5;
 /// Payload plus Ragu's header suffix slot.
 const HEADER_SIZE: usize = PAYLOAD + 1;
 type App = Application<'static, Pasta, Rank, HEADER_SIZE>;
-type TransitionPcd = Pcd<Pasta, Rank, Transition>;
-type Payload<'dr, D> = FixedVec<Element<'dr, D>, ConstLen<PAYLOAD>>;
+pub(super) type TransitionPcd = Pcd<Pasta, Rank, Transition>;
+pub(super) type Payload<'dr, D> = FixedVec<Element<'dr, D>, ConstLen<PAYLOAD>>;
 
 // Header payload slots.
-const START_STATE: usize = 0;
-const START_LIAB: usize = 1;
-const END_STATE: usize = 2;
-const END_LIAB: usize = 3;
-const COUNT: usize = 4;
+pub(super) const START_STATE: usize = 0;
+pub(super) const START_LIAB: usize = 1;
+pub(super) const END_STATE: usize = 2;
+pub(super) const END_LIAB: usize = 3;
+pub(super) const COUNT: usize = 4;
 
-fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
+pub(super) fn ragu_err(context: &str, e: impl core::fmt::Display) -> CircuitError {
     CircuitError::Plonk(format!("ragu {context}: {e}"))
 }
 
 /// `[start_state, start_liabilities, end_state, end_liabilities, step_count]`
-struct Transition;
+pub(super) struct Transition;
 
 impl Header<Fp> for Transition {
     const SUFFIX: Suffix = Suffix::new(0);
@@ -85,7 +85,7 @@ impl Header<Fp> for Transition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum StepKind {
+pub(super) enum StepKind {
     Mint,
     Swap,
     Melt,
@@ -93,18 +93,18 @@ enum StepKind {
 
 /// The preimage of a `MintState::state_hash`.
 #[derive(Clone, Copy, PartialEq, Eq)]
-struct StateFields {
-    epoch: u64,
-    liabilities: u64,
-    nf_root: Fp,
-    note_root: Fp,
-    event_log: Fp,
+pub(super) struct StateFields {
+    pub(super) epoch: u64,
+    pub(super) liabilities: u64,
+    pub(super) nf_root: Fp,
+    pub(super) note_root: Fp,
+    pub(super) event_log: Fp,
     /// Native `state_hash`, used only for pre-checks outside the circuit.
-    hash: Fp,
+    pub(super) hash: Fp,
 }
 
 impl StateFields {
-    fn of(state: &MintState) -> Result<Self> {
+    pub(super) fn of(state: &MintState) -> Result<Self> {
         let [nf, note, ev] =
             mint_state_root_fields(&state.nullifier_acc_root, &state.note_acc_root, &state.event_log_hash);
         Ok(Self {
@@ -236,7 +236,7 @@ leaf_step!(SwapLeaf, 1, StepKind::Swap);
 leaf_step!(MeltLeaf, 2, StepKind::Melt);
 
 /// Recursive step: merges two adjacent transitions into one.
-struct FoldStep;
+pub(super) struct FoldStep;
 
 impl Step<Pasta> for FoldStep {
     const INDEX: Index = Index::new(3);
@@ -429,6 +429,15 @@ fn fold_chunk(app: &App, leaves: &[(StepKind, StepWitness)]) -> Result<Transitio
 
 /// Compresses a folded transition into the wire proof.
 fn finish(app: &App, root: &TransitionPcd, steps: usize) -> Result<FoldedProof> {
+    finish_with(app, root, steps, SubcircuitId::RaguFold)
+}
+
+pub(super) fn finish_with<const HS: usize>(
+    app: &Application<'static, Pasta, Rank, HS>,
+    root: &TransitionPcd,
+    steps: usize,
+    subcircuit: SubcircuitId,
+) -> Result<FoldedProof> {
     let compressed = app.compress(root, &mut UnwrapErr(SysRng)).map_err(|e| ragu_err("compress", e))?;
     let (proof, data) = compressed.into_parts();
     let bytes = proof.to_bytes().map_err(|e| ragu_err("encode", format!("{e:?}")))?;
@@ -438,13 +447,26 @@ fn finish(app: &App, root: &TransitionPcd, steps: usize) -> Result<FoldedProof> 
         .map(|slot| data[slot].to_bytes())
         .to_vec();
     Ok(FoldedProof {
-        subcircuit: SubcircuitId::RaguFold,
+        subcircuit,
         k: RAGU_RANK,
         public_inputs,
         ipa_proof: bytes,
         folded_children: steps,
         transition: None,
     })
+}
+
+/// The running fold: the proof so far, the state it ends at, and its step count.
+pub(super) type Running = (TransitionPcd, StateFields, usize);
+
+/// How a [`BackgroundFolder`] proves and compresses, so the worker can serve
+/// either Ragu fold application.
+#[derive(Clone, Copy)]
+pub(super) struct FolderOps {
+    /// Fuses one more step onto the running proof.
+    pub(super) extend: fn(Option<Running>, &FoldedProof) -> Result<Running>,
+    /// Compresses the running proof.
+    pub(super) finish: fn(&TransitionPcd, usize) -> Result<FoldedProof>,
 }
 
 enum FolderMsg {
@@ -464,17 +486,24 @@ pub struct BackgroundFolder {
 
 impl BackgroundFolder {
     pub fn spawn() -> Self {
+        Self::spawn_with(FolderOps {
+            extend,
+            finish: |root, steps| app().and_then(|app| finish(app, root, steps)),
+        })
+    }
+
+    pub(super) fn spawn_with(ops: FolderOps) -> Self {
         let (tx, rx) = mpsc::channel::<FolderMsg>();
         std::thread::Builder::new()
             .name("zashu-ragu-fold".into())
             .spawn(move || {
-                let mut acc: Option<(TransitionPcd, StateFields, usize)> = None;
+                let mut acc: Option<Running> = None;
                 let mut poisoned: Option<String> = None;
                 for msg in rx {
                     match msg {
                         FolderMsg::Step(step) => {
                             if poisoned.is_none() {
-                                match extend(acc.take(), &step) {
+                                match (ops.extend)(acc.take(), &step) {
                                     Ok(next) => acc = Some(next),
                                     Err(e) => poisoned = Some(e.to_string()),
                                 }
@@ -485,7 +514,7 @@ impl BackgroundFolder {
                                 (Some(e), _) => Err(CircuitError::Plonk(format!("ragu background fold: {e}"))),
                                 (None, None) => Ok(None),
                                 (None, Some((root, _, steps))) => {
-                                    app().and_then(|app| finish(app, root, *steps)).map(Some)
+                                    (ops.finish)(root, *steps).map(Some)
                                 }
                             };
                             let _ = reply.send(result);
@@ -513,10 +542,7 @@ impl BackgroundFolder {
 }
 
 /// Fuses one more step onto the running proof.
-fn extend(
-    acc: Option<(TransitionPcd, StateFields, usize)>,
-    step: &FoldedProof,
-) -> Result<(TransitionPcd, StateFields, usize)> {
+fn extend(acc: Option<Running>, step: &FoldedProof) -> Result<Running> {
     let (kind, w) = leaf_from_step(step)?;
     check_leaf(kind, &w)?;
     let app = app()?;
@@ -537,8 +563,16 @@ fn extend(
 /// Callers still have to compare those public inputs with the expected states,
 /// which `verify_fold_batch` does for both backends.
 pub fn verify(proof: &FoldedProof) -> Result<()> {
+    verify_with(app()?, SubcircuitId::RaguFold, proof)
+}
+
+pub(super) fn verify_with<const HS: usize>(
+    app: &Application<'static, Pasta, Rank, HS>,
+    subcircuit: SubcircuitId,
+    proof: &FoldedProof,
+) -> Result<()> {
     let fail = |msg: String| CircuitError::VerificationFailed(format!("ragu fold: {msg}"));
-    if proof.subcircuit != SubcircuitId::RaguFold {
+    if proof.subcircuit != subcircuit {
         return Err(fail(format!("unexpected subcircuit {:?}", proof.subcircuit)));
     }
     if proof.public_inputs.len() != PAYLOAD {
@@ -562,7 +596,7 @@ pub fn verify(proof: &FoldedProof) -> Result<()> {
     }
     let compressed = CompressedProof::<Pasta>::from_bytes(&proof.ipa_proof)
         .map_err(|e| fail(format!("decode: {e:?}")))?;
-    match app()?.verify_compressed(&compressed.carry::<Transition>(data)) {
+    match app.verify_compressed(&compressed.carry::<Transition>(data)) {
         Ok(true) => Ok(()),
         Ok(false) => Err(fail("proof rejected".into())),
         Err(e) => Err(fail(e.to_string())),

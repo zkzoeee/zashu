@@ -100,6 +100,9 @@ Zashu has two proof backends. Ragu PCD is the default; Halo 2 is a fallback.
 # Default: Ragu
 cargo build --release -p zashu-mint
 
+# Same binary, cheaper fold without root bindings
+ZASHU_PCD_BACKEND=ragu-unbound ./target/release/zashu-mint
+
 # Same binary, Halo 2 selected at runtime
 ZASHU_PCD_BACKEND=halo2 ./target/release/zashu-mint
 
@@ -109,12 +112,13 @@ cargo build --release -p zashu-mint --no-default-features
 
 | | Ragu PCD (default) | Halo 2 (`ZASHU_PCD_BACKEND=halo2` or `--no-default-features`) |
 | :--- | :--- | :--- |
-| **`NUTZ-1` solvency fold** | Recursive: the proof attests every step, opens each step's state hash in-circuit and enforces that states and liabilities chain. Folded in the background as steps happen. | The folder verifies step proofs itself; the folded proof exposes only the start and end state. |
+| **`NUTZ-1` solvency fold** | Recursive: the proof attests every step from genesis, opens each state hash in-circuit, and binds how liabilities, the event log, the nullifier root (sorted inserts only) and the note root (appends only) change. Folded in the background as steps happen. | The folder verifies step proofs itself; the folded proof exposes only the start and end state. |
 | **`NUTZ-2` shielded transactions** | Every input's note opening, Merkle membership and nullifier, every output's opening, and the value balance are enforced in-circuit. | Proves Merkle membership of one input, 64-bit ranges and value balance. Note openings and nullifiers are not bound by the proof. |
 | **`NUTZ-4` predicates** | One step circuit per predicate (`StandardSpend`, `P2PK`, `Timelock`, `PrivateHTLC` claim and refund), enforced in-circuit and hidden from the mint. `Multisig` is not ported yet. | Checked by the wallet when it builds the proof; not part of the proof. |
 | **Solvency proof, 64 steps** | 67 s to fold, 69 ms to verify, 6,208 bytes | 0.12 s to fold, 1.8 ms to verify, 3,360 bytes |
 | **Shielded swap (1 in, 2 out)** | 7.3 s to prove, 72 ms to verify, 6,208 bytes | 0.74 s to prove, 13 ms to verify, 4,384 bytes |
 
+* Binding the roots is the expensive part of the fold: about 1 s for an operation's value change, about 6 s per note insert and about 11 s per nullifier insert, so a shielded swap costs about 24 s of background folding. `ZASHU_PCD_BACKEND=ragu-unbound` keeps the recursive fold and Ragu transactions but lets the roots and event log move freely (about 1 s per operation); the auditor reports which kind it verified.
 * Ragu costs roughly 10x the proving time of Halo 2 per shielded transaction and far more for the solvency fold, because it actually re-proves and recursively verifies every step; see [`BENCHMARKS.md`](./BENCHMARKS.md) for the full comparison.
 * Proof sizes above are raw proof bytes. Proofs are currently embedded in JSON as a base64-encoded byte array, which inflates them about 4.8x on the wire (a Ragu solvency bundle is about 31 KB).
 * Predicate privacy is best-effort: transaction proofs are rerandomized before they are published, which is the mechanism Ragu provides for this, but Ragu documents the indistinguishability of rerandomized proofs as a goal that is not yet proven.

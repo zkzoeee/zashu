@@ -353,6 +353,14 @@ fn mode_b_lifecycle_interop_stealth_and_cross_mint_swap() {
     // Verify unified Mode A + Mode B solvency bundles on both mints!
     let sol_a = mint_a.solvency_bundle().unwrap();
     let sol_b = mint_b.solvency_bundle().unwrap();
-    assert!(verify_solvency_bundle(&sol_a, &provider_a).unwrap().solvent);
+    let report_a = verify_solvency_bundle(&sol_a, &provider_a).unwrap();
+    assert!(report_a.solvent);
     assert!(verify_solvency_bundle(&sol_b, &provider_b).unwrap().solvent);
+    // On the default backend the solvency proof attests every step and every
+    // event-log and root change this whole lifecycle made.
+    let default_backend =
+        std::env::var("ZASHU_PCD_BACKEND").is_err() && std::env::var("ZASHU_FOLD_BACKEND").is_err();
+    if cfg!(feature = "ragu") && default_backend {
+        assert!(report_a.steps_proven && report_a.roots_bound, "{}", report_a.fold_proof);
+    }
 }

@@ -41,6 +41,19 @@ pub struct InclusionWitness {
     pub siblings: Vec<[u8; 32]>,
 }
 
+/// One leaf change in a Merkle accumulator: `old_leaf -> new_leaf` at
+/// `leaf_index`, moving the root from `pre_root` to `post_root`. The siblings
+/// are the same on both sides, which is what lets a circuit check the update.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LeafUpdate {
+    pub pre_root: [u8; 32],
+    pub post_root: [u8; 32],
+    pub leaf_index: u64,
+    pub old_leaf: [u8; 32],
+    pub new_leaf: [u8; 32],
+    pub siblings: Vec<[u8; 32]>,
+}
+
 /// Append-only Poseidon Merkle accumulator for active Mode B note commitments,
 /// with a rolling window of recent valid anchor roots.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -140,6 +153,20 @@ impl NoteAccumulator {
         Ok(idx)
     }
 
+    /// [`insert`](Self::insert), also returning the update for the fold proof.
+    pub fn insert_recorded(&mut self, cm: [u8; 32]) -> Result<LeafUpdate> {
+        let pre_root = self.root();
+        let leaf_index = self.insert(cm)?;
+        Ok(LeafUpdate {
+            pre_root,
+            post_root: self.root(),
+            leaf_index,
+            old_leaf: self.empty[0],
+            new_leaf: cm,
+            siblings: self.witness(leaf_index)?.siblings,
+        })
+    }
+
     pub fn witness(&self, leaf_index: u64) -> Result<InclusionWitness> {
         if leaf_index >= self.next_index {
             return Err(AccError::IndexOutOfBounds(leaf_index));
@@ -205,6 +232,15 @@ pub struct NullifierTransitionWitness {
     pub post_root: [u8; 32],
     pub non_membership: NonMembershipWitness,
     pub new_leaf_index: u64,
+    /// The inserted nullifier.
+    #[serde(default)]
+    pub nullifier: [u8; 32],
+    /// The low leaf being re-pointed at the new nullifier (`pre_root -> mid`).
+    #[serde(default)]
+    pub low_update: Option<LeafUpdate>,
+    /// The new leaf being appended (`mid -> post_root`).
+    #[serde(default)]
+    pub append_update: Option<LeafUpdate>,
 }
 
 /// Tachyon-style prunable indexed nullifier accumulator.
@@ -317,12 +353,21 @@ impl NullifierAccumulator {
         };
 
         // Update low_idx in place in Merkle tree & insert new_idx
+        let low_update_base = (old_low.hash(), updated_low.hash());
         self.leaves[low_idx as usize] = updated_low.clone();
         self.update_leaf_at(low_idx, updated_low.hash());
-
+        let mid_root = self.root();
+        let low_update = LeafUpdate {
+            pre_root,
+            post_root: mid_root,
+            leaf_index: low_idx,
+            old_leaf: low_update_base.0,
+            new_leaf: low_update_base.1,
+            siblings: non_membership.low_witness.siblings.clone(),
+        };
         self.leaves.push(new_leaf.clone());
-        let inserted_idx = self.tree.insert(new_leaf.hash())?;
-        debug_assert_eq!(inserted_idx, new_idx);
+        let append_update = self.tree.insert_recorded(new_leaf.hash())?;
+        debug_assert_eq!(append_update.leaf_index, new_idx);
         self.sorted_index.insert(nf, new_idx);
 
         Ok(NullifierTransitionWitness {
@@ -330,6 +375,9 @@ impl NullifierAccumulator {
             post_root: self.root(),
             non_membership,
             new_leaf_index: new_idx,
+            nullifier: nf,
+            low_update: Some(low_update),
+            append_update: Some(append_update),
         })
     }
 

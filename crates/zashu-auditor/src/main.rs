@@ -64,8 +64,14 @@ async fn main() -> Result<()> {
     };
 
     println!(
-        "SOLVENT | epoch={} | liabilities={} sats | reserves={} sats | verified in {}ms",
-        report.epoch, report.total_liabilities, report.total_reserves, report.verify_ms
+        "SOLVENT | epoch={} | liabilities={} sats | reserves={} sats | verified in {}ms | proof={} | steps proven={} | roots bound={}",
+        report.epoch,
+        report.total_liabilities,
+        report.total_reserves,
+        report.verify_ms,
+        report.fold_proof,
+        report.steps_proven,
+        report.roots_bound
     );
     Ok(())
 }

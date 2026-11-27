@@ -71,7 +71,7 @@ fn main() {
             cur.epoch += 1;
             cur.total_liabilities += 1_000;
             cur.event_log_hash = hash_event_mint(&prev.event_log_hash, &[i as u8; 32], 1_000);
-            steps.push(prove_mint_step(&prev, &cur, 1_000).unwrap());
+            steps.push(prove_mint_step(&prev, &cur, 1_000).unwrap().with_event([i as u8; 32]));
         }
         let step_ms = t_prove.elapsed().as_millis();
 

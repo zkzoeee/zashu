@@ -14,6 +14,7 @@ use zashu_circuits::mode_a::{
     fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step,
 };
 use zashu_circuits::FoldedProof;
+use zashu_core::field::canonical_fp_bytes;
 use zashu_core::poseidon::{hash_event_melt, hash_event_mint};
 use zashu_core::reserves::{compute_reserves_challenge, sign_taproot_reserve_utxo};
 use zashu_core::types::{MintState, ReservesAttestation, SolvencyBundle};
@@ -201,7 +202,7 @@ impl EpochFolder {
                         .checked_add(*amount)
                         .ok_or_else(|| SidecarError::Circuit(zashu_circuits::CircuitError::ValueBounds))?;
                     state.event_log_hash = hash_event_mint(&prev.event_log_hash, quote_hash, *amount);
-                    step_proofs.push(prove_mint_step(&prev, &state, *amount)?);
+                    step_proofs.push(prove_mint_step(&prev, &state, *amount)?.with_event(*quote_hash));
                 }
                 MintEvent::Swap {
                     input_nullifiers,
@@ -210,7 +211,7 @@ impl EpochFolder {
                 } => {
                     let mut transitions = Vec::with_capacity(input_nullifiers.len());
                     for nf in input_nullifiers {
-                        transitions.push(self.nf_acc.insert(*nf)?);
+                        transitions.push(self.nf_acc.insert(canonical_fp_bytes(b"zashu-cdk-nf", nf))?);
                     }
                     state.nullifier_acc_root = self.nf_acc.root();
                     step_proofs.push(prove_swap_step(&prev, &state, *sum_in, *sum_out, &transitions)?);
@@ -220,8 +221,9 @@ impl EpochFolder {
                     amount,
                     payout_hash,
                 } => {
+                    let mut transitions = Vec::with_capacity(input_nullifiers.len());
                     for nf in input_nullifiers {
-                        self.nf_acc.insert(*nf)?;
+                        transitions.push(self.nf_acc.insert(canonical_fp_bytes(b"zashu-cdk-nf", nf))?);
                     }
                     state.nullifier_acc_root = self.nf_acc.root();
                     state.total_liabilities = state
@@ -229,7 +231,11 @@ impl EpochFolder {
                         .checked_sub(*amount)
                         .ok_or_else(|| SidecarError::Circuit(zashu_circuits::CircuitError::ValueBounds))?;
                     state.event_log_hash = hash_event_melt(&prev.event_log_hash, payout_hash, *amount);
-                    step_proofs.push(prove_melt_step(&prev, &state, *amount)?);
+                    step_proofs.push(
+                        prove_melt_step(&prev, &state, *amount)?
+                            .with_event(*payout_hash)
+                            .with_root_updates(transitions, Vec::new()),
+                    );
                 }
             }
         }

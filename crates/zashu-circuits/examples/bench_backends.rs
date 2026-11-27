@@ -68,7 +68,7 @@ fn mode_a(backend: FoldBackend, batch: usize) -> Row {
         cur.epoch += 1;
         cur.total_liabilities += 1_000;
         cur.event_log_hash = hash_event_mint(&prev.event_log_hash, &[i as u8; 32], 1_000);
-        steps.push(prove_mint_step(&prev, &cur, 1_000).unwrap());
+        steps.push(prove_mint_step(&prev, &cur, 1_000).unwrap().with_event([i as u8; 32]));
     }
     let (prove_ms, folded) = best_ms(|| fold_mode_a_batch_with(backend, &s0, &cur, &steps).unwrap());
     let (verify_ms, ()) = best_ms(|| verify_fold_batch(&folded, &s0.state_hash(), &cur).unwrap());
@@ -184,6 +184,63 @@ fn mode_b() -> Vec<Row> {
     rows
 }
 
+/// Cost of folding one mint operation with the default, root-binding Ragu
+/// fold: each row is a single operation on live accumulators.
+fn bound_fold_ops() {
+    use zashu_acc::NullifierAccumulator;
+    use zashu_circuits::mode_a::{prove_melt_step, prove_swap_step};
+    use zashu_core::field::{fp_from_u64, fp_to_bytes};
+    use zashu_core::poseidon::hash_event_melt;
+
+    let fe = |v: u64| fp_to_bytes(&fp_from_u64(v));
+    let (mut notes, mut nfs) = (NoteAccumulator::new(64), NullifierAccumulator::new());
+    let genesis = MintState::genesis(nfs.root(), notes.root());
+    let mut state = genesis.clone();
+    let time = |name: &str, start: &MintState, end: &MintState, step: FoldedProof| {
+        let t = Instant::now();
+        let folded = fold_mode_a_batch_with(FoldBackend::Ragu, start, end, &[step]).unwrap();
+        let ms = t.elapsed().as_secs_f64() * 1e3;
+        verify_fold_batch(&folded, &start.state_hash(), end).unwrap();
+        println!("| {name} | {ms:.0} ms |");
+    };
+    println!("\n| Root-binding fold, one operation | Ragu fold time |");
+    println!("| :--- | ---: |");
+
+    // Warm-up builds the application.
+    let prev = state.clone();
+    state.epoch += 1;
+    let warm = prove_swap_step(&prev, &state, 0, 0, &[]).unwrap();
+    fold_mode_a_batch_with(FoldBackend::Ragu, &prev, &state, &[warm.clone()]).unwrap();
+    time("value step only (epoch advance)", &prev, &state, warm);
+
+    let prev = state.clone();
+    let note = notes.insert_recorded(fe(101)).unwrap();
+    state.epoch += 1;
+    state.total_liabilities += 1_000;
+    state.note_acc_root = notes.root();
+    state.event_log_hash = hash_event_mint(&prev.event_log_hash, &[1u8; 32], 1_000);
+    let step = prove_mint_step(&prev, &state, 1_000).unwrap().with_event([1u8; 32]).with_root_updates(vec![], vec![note]);
+    time("shielded mint: value + 1 note insert", &prev, &state, step);
+
+    let prev = state.clone();
+    let nf = vec![nfs.insert(fe(200)).unwrap()];
+    let outs = vec![notes.insert_recorded(fe(102)).unwrap(), notes.insert_recorded(fe(103)).unwrap()];
+    state.epoch += 1;
+    state.nullifier_acc_root = nfs.root();
+    state.note_acc_root = notes.root();
+    let step = prove_swap_step(&prev, &state, 0, 0, &nf).unwrap().with_root_updates(nf, outs);
+    time("shielded swap: value + 1 nullifier + 2 note inserts", &prev, &state, step);
+
+    let prev = state.clone();
+    let nf = vec![nfs.insert(fe(100)).unwrap()];
+    state.epoch += 1;
+    state.total_liabilities -= 300;
+    state.nullifier_acc_root = nfs.root();
+    state.event_log_hash = hash_event_melt(&prev.event_log_hash, &[3u8; 32], 300);
+    let step = prove_melt_step(&prev, &state, 300).unwrap().with_event([3u8; 32]).with_root_updates(nf, vec![]);
+    time("shielded melt: value + 1 nullifier insert", &prev, &state, step);
+}
+
 fn run(backend: FoldBackend, label: &str, batches: &[usize]) -> Vec<Row> {
     std::env::set_var(PCD_BACKEND_ENV, label);
     // Warm-up: key generation / application build is a one-time cost.
@@ -198,6 +255,10 @@ fn run(backend: FoldBackend, label: &str, batches: &[usize]) -> Vec<Row> {
 }
 
 fn main() {
+    if std::env::args().any(|a| a == "--bound-fold-only") {
+        bound_fold_ops();
+        return;
+    }
     let halo2 = run(FoldBackend::Halo2, "halo2", &[1, 16, 64]);
     let ragu = run(FoldBackend::Ragu, "ragu", &[1, 16, 64]);
 
@@ -217,4 +278,5 @@ fn main() {
             r.proof_bytes
         );
     }
+    bound_fold_ops();
 }

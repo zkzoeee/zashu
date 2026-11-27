@@ -16,8 +16,11 @@ use crate::range_check::RangeCheck64Config;
 
 #[cfg(feature = "ragu")]
 pub mod ragu_backend;
+#[cfg(feature = "ragu")]
+pub mod ragu_roots;
 
-/// Environment variable read by [`FoldBackend::from_env`]: `ragu` or `halo2`.
+/// Environment variable read by [`FoldBackend::from_env`]: `ragu`,
+/// `ragu-unbound` or `halo2`.
 /// Unset selects Ragu when it is compiled in (the default build), else Halo 2.
 pub const PCD_BACKEND_ENV: &str = "ZASHU_PCD_BACKEND";
 /// Older name for [`PCD_BACKEND_ENV`], still honoured when that one is unset.
@@ -33,10 +36,15 @@ pub enum FoldBackend {
     #[cfg_attr(not(feature = "ragu"), default)]
     Halo2,
     /// Recursive Ragu PCD: the folded proof attests every step and the chaining
-    /// between them. Requires the `ragu` cargo feature, which is on by
-    /// default; this is then the default backend.
+    /// between them, including how the event log, nullifier root and note root
+    /// change. Requires the `ragu` cargo feature, which is on by default; this
+    /// is then the default backend.
     #[cfg_attr(feature = "ragu", default)]
     Ragu,
+    /// Ragu PCD without the root bindings: each step opens its state hashes
+    /// and checks liabilities, but roots and the event log move freely. Much
+    /// cheaper to prove. Mode B transactions are proven as with [`Self::Ragu`].
+    RaguUnbound,
 }
 
 impl FoldBackend {
@@ -54,8 +62,9 @@ impl FoldBackend {
             "" => Ok(Self::default()),
             "halo2" => Ok(Self::Halo2),
             "ragu" => Ok(Self::Ragu),
+            "ragu-unbound" => Ok(Self::RaguUnbound),
             other => Err(CircuitError::InvalidWitness(format!(
-                "{name}={other:?}: expected \"halo2\" or \"ragu\""
+                "{name}={other:?}: expected \"ragu\", \"ragu-unbound\" or \"halo2\""
             ))),
         }
     }
@@ -66,9 +75,9 @@ impl FoldBackend {
         match Self::from_env()? {
             Self::Halo2 => Ok(false),
             #[cfg(feature = "ragu")]
-            Self::Ragu => Ok(true),
+            Self::Ragu | Self::RaguUnbound => Ok(true),
             #[cfg(not(feature = "ragu"))]
-            Self::Ragu => Err(ragu_unavailable()),
+            Self::Ragu | Self::RaguUnbound => Err(ragu_unavailable()),
         }
     }
 }
@@ -95,9 +104,13 @@ impl IncrementalFold {
                 folder: None,
             }),
             #[cfg(feature = "ragu")]
-            FoldBackend::Ragu => Ok(Self { backend, folder: Some(ragu_backend::BackgroundFolder::spawn()) }),
+            FoldBackend::Ragu => Ok(Self { backend, folder: Some(ragu_roots::background()) }),
+            #[cfg(feature = "ragu")]
+            FoldBackend::RaguUnbound => {
+                Ok(Self { backend, folder: Some(ragu_backend::BackgroundFolder::spawn()) })
+            }
             #[cfg(not(feature = "ragu"))]
-            FoldBackend::Ragu => Err(ragu_unavailable()),
+            FoldBackend::Ragu | FoldBackend::RaguUnbound => Err(ragu_unavailable()),
         }
     }
 
@@ -567,7 +580,7 @@ pub fn prove_swap_step(
         &instances,
         1,
     )
-    .map(|p| p.with_transition(prev, next))
+    .map(|p| p.with_transition(prev, next).with_root_updates(transitions.to_vec(), Vec::new()))
 }
 
 pub fn prove_melt_step(prev: &MintState, next: &MintState, amount: u64) -> Result<FoldedProof> {
@@ -609,8 +622,10 @@ pub fn verify_mode_a_step(proof: &FoldedProof) -> Result<()> {
         SubcircuitId::FoldBatch => eng.verify(SubcircuitId::FoldBatch, &FoldBatchCircuit::default(), proof),
         #[cfg(feature = "ragu")]
         SubcircuitId::RaguFold => ragu_backend::verify(proof),
+        #[cfg(feature = "ragu")]
+        SubcircuitId::RaguFoldRoots => ragu_roots::verify(proof),
         #[cfg(not(feature = "ragu"))]
-        SubcircuitId::RaguFold => Err(ragu_unavailable()),
+        SubcircuitId::RaguFold | SubcircuitId::RaguFoldRoots => Err(ragu_unavailable()),
         other => Err(CircuitError::VerificationFailed(format!(
             "unexpected subcircuit in Mode A: {other:?}"
         ))),
@@ -637,9 +652,11 @@ pub fn fold_mode_a_batch_with(
     match backend {
         FoldBackend::Halo2 => fold_mode_a_batch_halo2(start_state, end_state, step_proofs),
         #[cfg(feature = "ragu")]
-        FoldBackend::Ragu => ragu_backend::fold(start_state, end_state, step_proofs),
+        FoldBackend::Ragu => ragu_roots::fold(start_state, end_state, step_proofs),
+        #[cfg(feature = "ragu")]
+        FoldBackend::RaguUnbound => ragu_backend::fold(start_state, end_state, step_proofs),
         #[cfg(not(feature = "ragu"))]
-        FoldBackend::Ragu => Err(ragu_unavailable()),
+        FoldBackend::Ragu | FoldBackend::RaguUnbound => Err(ragu_unavailable()),
     }
 }
 

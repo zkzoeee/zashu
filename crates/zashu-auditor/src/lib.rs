@@ -5,7 +5,7 @@ use std::time::Instant;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use zashu_circuits::mode_a::verify_fold_batch;
-use zashu_circuits::FoldedProof;
+use zashu_circuits::{FoldedProof, SubcircuitId};
 use zashu_core::reserves::{verify_reserves_attestation, UtxoProvider};
 use zashu_core::types::SolvencyBundle;
 
@@ -33,6 +33,17 @@ pub struct AuditReport {
     pub total_liabilities: u64,
     pub total_reserves: u64,
     pub verify_ms: u128,
+    /// Which fold proof was verified, e.g. `RaguFoldRoots` or `FoldBatch`.
+    #[serde(default)]
+    pub fold_proof: String,
+    /// The proof attests every step from genesis (any Ragu fold). A Halo 2
+    /// `FoldBatch` only shows the endpoints.
+    #[serde(default)]
+    pub steps_proven: bool,
+    /// The proof also attests how the event log, nullifier root and note root
+    /// changed (`RaguFoldRoots`).
+    #[serde(default)]
+    pub roots_bound: bool,
 }
 
 /// Computes the deterministic mint signature tag over `(mint_id, state_hash)`.
@@ -82,5 +93,8 @@ pub fn verify_solvency_bundle(
         total_liabilities: bundle.state.total_liabilities,
         total_reserves,
         verify_ms: start.elapsed().as_millis(),
+        fold_proof: format!("{:?}", proof.subcircuit),
+        steps_proven: matches!(proof.subcircuit, SubcircuitId::RaguFold | SubcircuitId::RaguFoldRoots),
+        roots_bound: proof.subcircuit == SubcircuitId::RaguFoldRoots,
     })
 }

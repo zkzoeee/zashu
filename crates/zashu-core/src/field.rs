@@ -24,6 +24,19 @@ pub fn bytes_to_fq(bytes: &[u8; 32]) -> Result<Fq> {
     Option::from(Fq::from_repr(*bytes)).ok_or(ZashuError::InvalidFieldEncoding)
 }
 
+/// A 32-byte value as the canonical encoding of a field element: unchanged if it
+/// already is one, hashed to the field otherwise.
+///
+/// Nullifier accumulator keys must be canonical so circuits can both hash and
+/// order them; legacy secrets and externally supplied nullifiers go through
+/// this first.
+pub fn canonical_fp_bytes(domain: &[u8], bytes: &[u8; 32]) -> [u8; 32] {
+    match bytes_to_fp(bytes) {
+        Ok(_) => *bytes,
+        Err(_) => fp_to_bytes(&hash_bytes_to_fp(domain, bytes)),
+    }
+}
+
 /// Deterministically maps arbitrary bytes into `Fp` via BLAKE2b-512 uniform reduction.
 pub fn hash_bytes_to_fp(domain: &[u8], data: &[u8]) -> Fp {
     let mut state = blake2b_simd::Params::new().hash_length(64).to_state();

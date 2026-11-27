@@ -1,4 +1,6 @@
-//! Mode A fold through the Ragu PCD backend.
+//! Mode A fold through the Ragu backend without root bindings
+//! (`FoldBackend::RaguUnbound`). The default, root-binding fold is covered in
+//! `ragu_roots.rs`.
 //! Run with: `cargo test --release -p zashu-circuits --test ragu_fold`
 #![cfg(feature = "ragu")]
 
@@ -41,7 +43,7 @@ fn ragu_fold_verifies_and_rejects_tampering() {
     let Chain { states: [s0, _, s2, s3], steps } = chain();
     let genesis = s0.state_hash();
 
-    let folded = fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &steps).unwrap();
+    let folded = fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &steps).unwrap();
     assert_eq!(folded.subcircuit, SubcircuitId::RaguFold);
     assert_eq!(folded.folded_children, 3);
     verify_fold_batch(&folded, &genesis, &s3).unwrap();
@@ -86,23 +88,23 @@ fn ragu_fold_rejects_broken_chains() {
     let Chain { states: [s0, s1, _, s3], steps: [p1, p2, p3] } = chain();
 
     // Missing middle step: mint then melt do not chain.
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[p1.clone(), p3.clone()]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &[p1.clone(), p3.clone()]).is_err());
     // Steps out of order.
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[p2.clone(), p1.clone(), p3]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &[p2.clone(), p1.clone(), p3]).is_err());
     // Steps do not reach the requested end state.
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[p1.clone(), p2]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &[p1.clone(), p2]).is_err());
     // Steps do not start at the requested start state.
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s1, &s1, &[p1]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s1, &s1, &[p1]).is_err());
     // A step whose carried transition was altered no longer chains.
     let Chain { states: [s0, _, _, s3], steps: [mut p1, p2, p3] } = chain();
     p1.transition.as_mut().unwrap().next.total_liabilities = 5_000;
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[p1, p2.clone(), p3.clone()]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &[p1, p2.clone(), p3.clone()]).is_err());
     // A step proof stripped of its transition cannot be re-proven.
     let mut bare = chain().steps[0].clone();
     bare.transition = None;
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[bare, p2, p3]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &[bare, p2, p3]).is_err());
     // Empty batch.
-    assert!(fold_mode_a_batch_with(FoldBackend::Ragu, &s0, &s3, &[]).is_err());
+    assert!(fold_mode_a_batch_with(FoldBackend::RaguUnbound, &s0, &s3, &[]).is_err());
 }
 
 #[test]
@@ -110,7 +112,7 @@ fn incremental_fold_matches_batch_and_poisons_on_a_gap() {
     use zashu_circuits::mode_a::IncrementalFold;
 
     let Chain { states: [s0, s1, _, s3], steps: [p1, p2, p3] } = chain();
-    let fold = IncrementalFold::new(FoldBackend::Ragu).unwrap();
+    let fold = IncrementalFold::new(FoldBackend::RaguUnbound).unwrap();
     assert!(fold.snapshot().unwrap().is_none());
 
     fold.push(&p1);

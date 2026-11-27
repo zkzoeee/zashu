@@ -27,7 +27,7 @@ mod tests {
     use zashu_core::types::{MintState, Note, PredicateId};
 
     use crate::mode_a::{
-        fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step, verify_fold_batch,
+        fold_mode_a_batch_with, prove_melt_step, prove_mint_step, prove_swap_step, verify_fold_batch,
         verify_mode_a_step,
     };
     use crate::mode_b::{
@@ -66,7 +66,10 @@ mod tests {
         let p3 = prove_melt_step(&s2, &s3, 300).unwrap();
         verify_mode_a_step(&p3).unwrap();
 
-        let folded = fold_mode_a_batch(&s0, &s3, &[p1, p2, p3]).unwrap();
+        // These states are made up (no real accumulators behind the roots),
+        // so fold them with the backend that does not bind root changes.
+        let folded =
+            fold_mode_a_batch_with(crate::mode_a::FoldBackend::Halo2, &s0, &s3, &[p1, p2, p3]).unwrap();
         verify_fold_batch(&folded, &s0.state_hash(), &s3).unwrap();
 
         // Tamper check

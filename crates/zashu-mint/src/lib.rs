@@ -11,7 +11,9 @@ use axum::{Json, Router};
 use bitcoin::secp256k1::{Keypair, Message, Secp256k1, SecretKey, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use zashu_acc::{InclusionWitness, NoteAccumulator, NullifierAccumulator};
+use zashu_acc::{
+    InclusionWitness, LeafUpdate, NoteAccumulator, NullifierAccumulator, NullifierTransitionWitness,
+};
 use zashu_circuits::mode_a::{
     fold_mode_a_batch, prove_melt_step, prove_mint_step, prove_swap_step, verify_fold_batch,
     IncrementalFold,
@@ -20,7 +22,7 @@ use zashu_circuits::mode_b::{
     proof_epoch, verify_zk_melt, verify_zk_mint, verify_zk_shield, verify_zk_swap, verify_zk_unshield,
 };
 use zashu_circuits::FoldedProof;
-use zashu_core::field::hex32;
+use zashu_core::field::{bytes_to_fp, canonical_fp_bytes, hex32};
 use zashu_core::pedersen::ValueCommitment;
 use zashu_core::poseidon::{hash_event_melt, hash_event_mint};
 use zashu_core::reserves::{compute_reserves_challenge, sign_taproot_reserve_utxo};
@@ -204,6 +206,10 @@ pub struct ZashuMint {
     rolling_window: usize,
     reserves: Vec<MintReserveKey>,
     step_proofs: Vec<FoldedProof>,
+    /// Accumulator updates made since the last recorded step; the next step
+    /// proof carries them so the fold can bind the root changes.
+    pending_nullifier_updates: Vec<NullifierTransitionWitness>,
+    pending_note_updates: Vec<LeafUpdate>,
     /// Folds steps in the background when the Ragu backend is selected.
     incremental_fold: IncrementalFold,
     epoch_commitments: Vec<(u64, u64, NoteCommitment)>,
@@ -233,6 +239,8 @@ impl ZashuMint {
             rolling_window,
             reserves,
             step_proofs: Vec::new(),
+            pending_nullifier_updates: Vec::new(),
+            pending_note_updates: Vec::new(),
             incremental_fold: IncrementalFold::from_env()
                 .expect("invalid ZASHU_FOLD_BACKEND or backend not compiled in"),
             epoch_commitments: Vec::new(),
@@ -262,7 +270,7 @@ impl ZashuMint {
             self.state.total_liabilities += amt;
             let qh = blake2b_hash(secret.as_bytes());
             self.state.event_log_hash = hash_event_mint(&prev.event_log_hash, &qh, amt);
-            self.record_step(prove_mint_step(&prev, &self.state, amt)?);
+            self.record_step(prove_mint_step(&prev, &self.state, amt)?.with_event(qh));
             out.push(LegacyCashuProof {
                 secret,
                 amount: amt,
@@ -279,7 +287,7 @@ impl ZashuMint {
             .map_err(|e| MintError::InvalidProof(e.to_string()))?;
 
         let prev = self.state.clone();
-        let leaf_index = self.note_acc.insert(req.cm.0)?;
+        let leaf_index = self.insert_note(req.cm.0)?;
         self.state.epoch += 1;
         self.state.total_liabilities = self
             .state
@@ -289,7 +297,7 @@ impl ZashuMint {
         self.state.note_acc_root = self.note_acc.root();
         let qh = blake2b_hash(req.quote_id.as_bytes());
         self.state.event_log_hash = hash_event_mint(&prev.event_log_hash, &qh, req.amount);
-        self.record_step(prove_mint_step(&prev, &self.state, req.amount)?);
+        self.record_step(prove_mint_step(&prev, &self.state, req.amount)?.with_event(qh));
         self.epoch_commitments
             .push((self.state.epoch, leaf_index, req.cm));
 
@@ -328,14 +336,14 @@ impl ZashuMint {
         let prev = self.state.clone();
         let mut transitions = Vec::with_capacity(req.nullifiers.len());
         for nf in &req.nullifiers {
-            transitions.push(self.nf_acc.insert(nf.0)?);
+            transitions.push(self.insert_nullifier(nf.0)?);
         }
 
         let mut leaf_indices = Vec::with_capacity(req.output_commitments.len());
         let mut witnesses = Vec::with_capacity(req.output_commitments.len());
         self.state.epoch += 1;
         for cm in &req.output_commitments {
-            let idx = self.note_acc.insert(cm.0)?;
+            let idx = self.insert_note(cm.0)?;
             leaf_indices.push(idx);
             self.epoch_commitments.push((self.state.epoch, idx, *cm));
         }
@@ -379,11 +387,11 @@ impl ZashuMint {
 
         let prev = self.state.clone();
         for nf in &req.nullifiers {
-            self.nf_acc.insert(nf.0)?;
+            self.insert_nullifier(nf.0)?;
         }
         self.state.epoch += 1;
         let (change_leaf_index, change_witness) = if let Some(cm) = req.change_cm {
-            let idx = self.note_acc.insert(cm.0)?;
+            let idx = self.insert_note(cm.0)?;
             self.epoch_commitments.push((self.state.epoch, idx, cm));
             (Some(idx), Some(self.note_acc.witness(idx)?))
         } else {
@@ -399,7 +407,7 @@ impl ZashuMint {
             .ok_or_else(|| MintError::InvalidRequest("melt exceeds liabilities".into()))?;
         let ph = blake2b_hash(req.quote_id.as_bytes());
         self.state.event_log_hash = hash_event_melt(&prev.event_log_hash, &ph, req.amount);
-        self.record_step(prove_melt_step(&prev, &self.state, req.amount)?);
+        self.record_step(prove_melt_step(&prev, &self.state, req.amount)?.with_event(ph));
 
         let sig = self.sign_state(&self.state);
         Ok(ZkMeltResponse {
@@ -437,12 +445,13 @@ impl ZashuMint {
         let mut transitions = Vec::with_capacity(req.bdhke_proofs.len());
         for bp in &req.bdhke_proofs {
             self.legacy_spent_secrets.insert(bp.secret.clone());
-            let nf = blake2b_hash(bp.secret.as_bytes());
-            transitions.push(self.nf_acc.insert(nf)?);
+            // Accumulator keys must be canonical field elements.
+            let nf = canonical_fp_bytes(b"zashu-legacy-nf", &blake2b_hash(bp.secret.as_bytes()));
+            transitions.push(self.insert_nullifier(nf)?);
         }
 
         self.state.epoch += 1;
-        let leaf_index = self.note_acc.insert(req.cm.0)?;
+        let leaf_index = self.insert_note(req.cm.0)?;
         self.epoch_commitments
             .push((self.state.epoch, leaf_index, req.cm));
         self.state.nullifier_acc_root = self.nf_acc.root();
@@ -484,12 +493,12 @@ impl ZashuMint {
         let prev = self.state.clone();
         let mut transitions = Vec::with_capacity(req.nullifiers.len());
         for nf in &req.nullifiers {
-            transitions.push(self.nf_acc.insert(nf.0)?);
+            transitions.push(self.insert_nullifier(nf.0)?);
         }
 
         self.state.epoch += 1;
         let (change_leaf_index, change_witness) = if let Some(cm) = req.change_cm {
-            let idx = self.note_acc.insert(cm.0)?;
+            let idx = self.insert_note(cm.0)?;
             self.epoch_commitments.push((self.state.epoch, idx, cm));
             (Some(idx), Some(self.note_acc.witness(idx)?))
         } else {
@@ -563,8 +572,34 @@ impl ZashuMint {
         }
     }
 
-    /// Records a Mode A step proof and queues it for background folding.
+    /// Appends a note commitment, remembering the update for the fold proof.
+    fn insert_note(&mut self, cm: [u8; 32]) -> Result<u64> {
+        if bytes_to_fp(&cm).is_err() {
+            return Err(MintError::InvalidRequest("note commitment is not a canonical field element".into()));
+        }
+        let update = self.note_acc.insert_recorded(cm)?;
+        let index = update.leaf_index;
+        self.pending_note_updates.push(update);
+        Ok(index)
+    }
+
+    /// Inserts a nullifier, remembering the update for the fold proof.
+    fn insert_nullifier(&mut self, nf: [u8; 32]) -> Result<NullifierTransitionWitness> {
+        if bytes_to_fp(&nf).is_err() {
+            return Err(MintError::InvalidRequest("nullifier is not a canonical field element".into()));
+        }
+        let transition = self.nf_acc.insert(nf)?;
+        self.pending_nullifier_updates.push(transition.clone());
+        Ok(transition)
+    }
+
+    /// Records a Mode A step proof, attaching the accumulator updates made
+    /// since the previous step, and queues it for background folding.
     fn record_step(&mut self, step: FoldedProof) {
+        let step = step.with_root_updates(
+            std::mem::take(&mut self.pending_nullifier_updates),
+            std::mem::take(&mut self.pending_note_updates),
+        );
         self.incremental_fold.push(&step);
         self.step_proofs.push(step);
     }

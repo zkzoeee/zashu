@@ -15,6 +15,7 @@ use rand::rand_core::UnwrapErr;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use zashu_core::field::{bytes_to_fp, fp_to_bytes};
+use zashu_acc::{LeafUpdate, NullifierTransitionWitness};
 use zashu_core::types::MintState;
 
 use crate::error::{CircuitError, Result};
@@ -31,6 +32,8 @@ pub enum SubcircuitId {
     FoldBatch,
     /// Mode A fold produced by the Ragu PCD backend (`ragu` feature).
     RaguFold,
+    /// Ragu Mode A fold that also binds event-log and root changes.
+    RaguFoldRoots,
     /// Mode B transaction produced by the Ragu PCD backend (`ragu` feature).
     RaguTx,
     ZkMint,
@@ -62,11 +65,49 @@ pub struct FoldedProof {
 pub struct StateTransition {
     pub prev: MintState,
     pub next: MintState,
+    /// Mint and melt steps: the quote / payout hash folded into the event log.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub event: Option<[u8; 32]>,
+    /// Nullifiers inserted by this step, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub nullifier_updates: Vec<NullifierTransitionWitness>,
+    /// Note commitments appended by this step, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub note_updates: Vec<LeafUpdate>,
 }
 
 impl FoldedProof {
     pub fn with_transition(mut self, prev: &MintState, next: &MintState) -> Self {
-        self.transition = Some(Box::new(StateTransition { prev: prev.clone(), next: next.clone() }));
+        self.transition = Some(Box::new(StateTransition {
+            prev: prev.clone(),
+            next: next.clone(),
+            event: None,
+            nullifier_updates: Vec::new(),
+            note_updates: Vec::new(),
+        }));
+        self
+    }
+
+    /// Records the quote or payout hash a mint or melt step folded into the
+    /// event log. Needed to bind the event log in the Ragu fold.
+    pub fn with_event(mut self, hash: [u8; 32]) -> Self {
+        if let Some(t) = self.transition.as_mut() {
+            t.event = Some(hash);
+        }
+        self
+    }
+
+    /// Records the accumulator updates this step made. Needed to bind the
+    /// nullifier and note roots in the Ragu fold.
+    pub fn with_root_updates(
+        mut self,
+        nullifier_updates: Vec<NullifierTransitionWitness>,
+        note_updates: Vec<LeafUpdate>,
+    ) -> Self {
+        if let Some(t) = self.transition.as_mut() {
+            t.nullifier_updates = nullifier_updates;
+            t.note_updates = note_updates;
+        }
         self
     }
 
