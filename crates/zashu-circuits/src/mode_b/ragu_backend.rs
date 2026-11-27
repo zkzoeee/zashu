@@ -35,7 +35,9 @@
 //! `epoch` is the epoch the predicates were evaluated at; the mint must reject
 //! a proof whose epoch is ahead of its own.
 //!
-//! Multisig notes are not supported by this backend yet.
+//! Multisig (`t`-of-`n`, up to 4 keys and 3 signers) has its own spend step:
+//! `Keys` steps gather up to three key proofs, and `SpendMultisig` checks they
+//! are distinct members of the committed key list and reach the threshold.
 
 use std::sync::OnceLock;
 
@@ -65,7 +67,10 @@ use zashu_core::types::{Note, NoteCommitment, Nullifier, PredicateId};
 use super::bytes_fp;
 use crate::error::{CircuitError, Result};
 use crate::pcd::{FoldedProof, SubcircuitId};
-use crate::predicates::{hashlock_to_fp, sk_to_scalar, verify_predicate, HtlcAction, PredicateWitness};
+use crate::predicates::{
+    hashlock_to_fp, sk_to_scalar, verify_predicate, HtlcAction, PredicateWitness, MULTISIG_MAX_KEYS,
+    MULTISIG_MAX_SIGNERS,
+};
 use crate::ragu_gadgets::{fp_from_pasta, poseidon_hash, values_of};
 
 type Rank = R<14>;
@@ -127,6 +132,11 @@ header!(
 header!(
     /// `[anchor, epoch, digest, balance]` of a partial transaction.
     Part, 2, 4
+);
+header!(
+    /// `[k1, k2, k3]`: key images the prover holds the secret keys for; zero
+    /// marks an unused slot.
+    Keys, 4, 3
 );
 header!(
     /// `[anchor, epoch, digest, balance]` of a finished transaction.
@@ -341,33 +351,34 @@ struct SpendWitness {
     b: Fp,
 }
 
-fn spend<'dr, D: Driver<'dr, F = Fp>>(
-    dr: &mut D,
-    kind: SpendKind,
-    w: DriverValue<D, SpendWitness>,
-    path: &V<'dr, D, 3>,
-    key: &V<'dr, D, 1>,
-) -> ragu::Result<V<'dr, D, 4>> {
-    let allocator = &mut Standard::new();
-    let key = &key[0];
+/// What every spend step establishes about the note it consumes.
+struct OpenedSpend<'dr, D: Driver<'dr>> {
+    value: Element<'dr, D>,
+    epoch: Element<'dr, D>,
+    owner: Element<'dr, D>,
+    params: Element<'dr, D>,
+    predicate_id: Element<'dr, D>,
+    /// `Poseidon2(TAG_SPEND, nullifier)`
+    digest: Element<'dr, D>,
+}
 
+/// Opens the spent note's commitment as the leaf the Merkle path starts
+/// from, checks the path runs the full depth, and derives the nullifier.
+fn open_spend<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    allocator: &mut impl Allocator<'dr, D>,
+    predicate: PredicateId,
+    w: &DriverValue<D, SpendWitness>,
+    path: &V<'dr, D, 3>,
+) -> ragu::Result<OpenedSpend<'dr, D>> {
     let value = alloc_u64(dr, allocator, w.as_ref().map(|w| w.value))?;
     let epoch = alloc_u64(dr, allocator, w.as_ref().map(|w| w.epoch))?;
     let owner = Element::alloc(dr, allocator, w.as_ref().map(|w| w.owner))?;
     let params = Element::alloc(dr, allocator, w.as_ref().map(|w| w.params))?;
     let rho = Element::alloc(dr, allocator, w.as_ref().map(|w| w.rho))?;
     let r = Element::alloc(dr, allocator, w.as_ref().map(|w| w.r))?;
+    let predicate_id = constant(dr, predicate as u8 as u64);
 
-    let predicate_id = match kind {
-        SpendKind::Standard => PredicateId::StandardSpend,
-        SpendKind::P2pk => PredicateId::P2PK,
-        SpendKind::Timelock => PredicateId::Timelock,
-        SpendKind::HtlcClaim | SpendKind::HtlcRefund => PredicateId::PrivateHTLC,
-    } as u8 as u64;
-    let predicate_id = constant(dr, predicate_id);
-
-    // The note this spend consumes is the leaf the Merkle path starts from,
-    // and the path runs the full depth of the accumulator.
     let domain_note = constant(dr, DOMAIN_NOTE);
     let cm = poseidon_hash(
         dr,
@@ -379,6 +390,28 @@ fn spend<'dr, D: Driver<'dr, F = Fp>>(
 
     let domain_nf = constant(dr, DOMAIN_NF);
     let nf = poseidon_hash(dr, &[domain_nf, r, rho])?;
+    let tag = constant(dr, TAG_SPEND);
+    let digest = poseidon_hash(dr, &[tag, nf])?;
+    Ok(OpenedSpend { value, epoch, owner, params, predicate_id, digest })
+}
+
+fn spend<'dr, D: Driver<'dr, F = Fp>>(
+    dr: &mut D,
+    kind: SpendKind,
+    w: DriverValue<D, SpendWitness>,
+    path: &V<'dr, D, 3>,
+    key: &V<'dr, D, 1>,
+) -> ragu::Result<V<'dr, D, 4>> {
+    let allocator = &mut Standard::new();
+    let key = &key[0];
+    let predicate = match kind {
+        SpendKind::Standard => PredicateId::StandardSpend,
+        SpendKind::P2pk => PredicateId::P2PK,
+        SpendKind::Timelock => PredicateId::Timelock,
+        SpendKind::HtlcClaim | SpendKind::HtlcRefund => PredicateId::PrivateHTLC,
+    };
+    let OpenedSpend { value, epoch, owner, params, predicate_id, digest } =
+        open_spend(dr, allocator, predicate, &w, path)?;
 
     // The predicate.
     let domain_pred = constant(dr, DOMAIN_PREDICATE);
@@ -420,8 +453,6 @@ fn spend<'dr, D: Driver<'dr, F = Fp>>(
         }
     }
 
-    let tag = constant(dr, TAG_SPEND);
-    let digest = poseidon_hash(dr, &[tag, nf])?;
     FixedVec::new(vec![path[1].clone(), epoch, digest, value])
 }
 
@@ -464,6 +495,207 @@ spend_step!(SpendP2pk, 4, SpendKind::P2pk);
 spend_step!(SpendTimelock, 5, SpendKind::Timelock);
 spend_step!(SpendHtlcClaim, 6, SpendKind::HtlcClaim);
 spend_step!(SpendHtlcRefund, 7, SpendKind::HtlcRefund);
+
+// --------------------------------------------------------------------------
+// Multisig: up to three key proofs against a committed key list
+// --------------------------------------------------------------------------
+
+/// Gathers one or two key proofs into a key set.
+struct KeysStart<const TWO: bool>;
+
+macro_rules! keys_start {
+    ($two:expr, $index:expr, $right:ty, $right_data:ty) => {
+        impl Step<Pasta> for KeysStart<$two> {
+            const INDEX: Index = Index::new($index);
+            type Witness<'source> = ();
+            type Aux<'source> = ();
+            type Left = Key;
+            type Right = $right;
+            type Output = Keys;
+
+            fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
+                &self,
+                dr: &mut D,
+                _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
+                _: DriverValue<D, ()>,
+                left: DriverValue<D, [Fp; 1]>,
+                right: DriverValue<D, $right_data>,
+            ) -> StepOut<'dr, D, Self, HS>
+            where
+                Self: 'dr,
+            {
+                let allocator = &mut Standard::new();
+                let left = Encoded::new(dr, allocator, left)?;
+                let right = Encoded::new(dr, allocator, right)?;
+                let first: &V<'dr, D, 1> = left.as_gadget();
+                let second = keys_second::<D, $two>(dr, right.as_gadget());
+                let zero = Element::zero(dr);
+                let out: V<'dr, D, 3> = FixedVec::new(vec![first[0].clone(), second, zero])?;
+                let data = values_of(&out);
+                Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
+            }
+        }
+    };
+}
+
+/// The second slot of a starting key set: the right child's key, or zero.
+trait SecondKey<'dr, D: Driver<'dr, F = Fp>> {
+    fn second(&self, dr: &mut D) -> Element<'dr, D>;
+}
+
+impl<'dr, D: Driver<'dr, F = Fp>> SecondKey<'dr, D> for () {
+    fn second(&self, dr: &mut D) -> Element<'dr, D> {
+        Element::zero(dr)
+    }
+}
+
+impl<'dr, D: Driver<'dr, F = Fp>> SecondKey<'dr, D> for V<'dr, D, 1> {
+    fn second(&self, _: &mut D) -> Element<'dr, D> {
+        self[0].clone()
+    }
+}
+
+fn keys_second<'dr, D: Driver<'dr, F = Fp>, const TWO: bool>(
+    dr: &mut D,
+    right: &impl SecondKey<'dr, D>,
+) -> Element<'dr, D> {
+    right.second(dr)
+}
+
+keys_start!(false, 11, (), ());
+keys_start!(true, 12, Key, [Fp; 1]);
+
+/// Adds a third key proof to a key set.
+struct KeysExtend;
+
+impl Step<Pasta> for KeysExtend {
+    const INDEX: Index = Index::new(13);
+    type Witness<'source> = ();
+    type Aux<'source> = ();
+    type Left = Keys;
+    type Right = Key;
+    type Output = Keys;
+
+    fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
+        &self,
+        dr: &mut D,
+        _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
+        _: DriverValue<D, ()>,
+        left: DriverValue<D, [Fp; 3]>,
+        right: DriverValue<D, [Fp; 1]>,
+    ) -> StepOut<'dr, D, Self, HS>
+    where
+        Self: 'dr,
+    {
+        let allocator = &mut Standard::new();
+        let left = Encoded::new(dr, allocator, left)?;
+        let right = Encoded::new(dr, allocator, right)?;
+        let l: &V<'dr, D, 3> = left.as_gadget();
+        let r: &V<'dr, D, 1> = right.as_gadget();
+        let out: V<'dr, D, 3> = FixedVec::new(vec![l[0].clone(), l[1].clone(), r[0].clone()])?;
+        let data = values_of(&out);
+        Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
+    }
+}
+
+#[derive(Clone, Copy)]
+struct MultisigWitness {
+    spend: SpendWitness,
+    threshold: u64,
+    key_count: u64,
+    /// The committed key images, zero-padded.
+    keys: [Fp; MULTISIG_MAX_KEYS],
+    /// `selected[i][j]`: signer slot `i` is committed key `j`.
+    selected: [[bool; MULTISIG_MAX_KEYS]; MULTISIG_MAX_SIGNERS],
+}
+
+struct SpendMultisig;
+
+impl Step<Pasta> for SpendMultisig {
+    const INDEX: Index = Index::new(14);
+    type Witness<'source> = MultisigWitness;
+    type Aux<'source> = ();
+    type Left = Path;
+    type Right = Keys;
+    type Output = Part;
+
+    fn witness<'dr, 'source: 'dr, D: Driver<'dr, F = Fp>, const HS: usize>(
+        &self,
+        dr: &mut D,
+        _: &mut Oracles<'_, 'dr, D, Pasta, Self>,
+        w: DriverValue<D, MultisigWitness>,
+        left: DriverValue<D, [Fp; 3]>,
+        right: DriverValue<D, [Fp; 3]>,
+    ) -> StepOut<'dr, D, Self, HS>
+    where
+        Self: 'dr,
+    {
+        let allocator = &mut Standard::new();
+        let left = Encoded::new(dr, allocator, left)?;
+        let right = Encoded::new(dr, allocator, right)?;
+        let path: &V<'dr, D, 3> = left.as_gadget();
+        let signers: &V<'dr, D, 3> = right.as_gadget();
+
+        let spend_w = w.as_ref().map(|w| w.spend);
+        let OpenedSpend { value, epoch, params, digest, .. } =
+            open_spend(dr, allocator, PredicateId::Multisig, &spend_w, path)?;
+
+        // The committed policy: threshold, key count and key list.
+        let threshold = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.threshold)))?;
+        threshold.enforce_le::<8>(dr, allocator, Fp::from(255u64))?;
+        threshold.clone().enforce_nonzero(dr)?;
+        let key_count = Element::alloc(dr, allocator, w.as_ref().map(|w| Fp::from(w.key_count)))?;
+        let mut keys = Vec::with_capacity(MULTISIG_MAX_KEYS);
+        for j in 0..MULTISIG_MAX_KEYS {
+            keys.push(Element::alloc(dr, allocator, w.as_ref().map(|w| w.keys[j]))?);
+        }
+        // tag = 0x02 + 256 t + 65536 n
+        let id = constant(dr, PredicateId::Multisig as u8 as u64);
+        let t_term = threshold.scale(dr, ragu::Coeff::Arbitrary(Fp::from(256u64)));
+        let n_term = key_count.scale(dr, ragu::Coeff::Arbitrary(Fp::from(65536u64)));
+        let tag = id.add(dr, &t_term).add(dr, &n_term);
+        let domain_pred = constant(dr, DOMAIN_PREDICATE);
+        let zero = Element::zero(dr);
+        let expected = poseidon_hash(
+            dr,
+            &[domain_pred, tag, keys[0].clone(), keys[1].clone(), keys[2].clone(), keys[3].clone(), zero],
+        )?;
+        enforce_equal(dr, &params, &expected)?;
+
+        // Each proven signer key is one committed key; no committed key is
+        // counted twice; and enough signers are present.
+        let mut count = Element::zero(dr);
+        let mut column: Vec<Element<'dr, D>> = (0..MULTISIG_MAX_KEYS).map(|_| Element::zero(dr)).collect();
+        for i in 0..MULTISIG_MAX_SIGNERS {
+            let active = signers[i].is_zero(dr, allocator)?.not(dr);
+            let mut row = Element::zero(dr);
+            let mut chosen = Element::zero(dr);
+            for j in 0..MULTISIG_MAX_KEYS {
+                let s = Boolean::alloc(dr, allocator, w.as_ref().map(|w| w.selected[i][j]))?;
+                row = row.add(dr, &s.element());
+                column[j] = column[j].add(dr, &s.element());
+                let term = s.element().mul(dr, &keys[j])?;
+                chosen = chosen.add(dr, &term);
+            }
+            // An active signer picks exactly one committed key, and it is
+            // theirs; an empty slot picks none.
+            enforce_equal(dr, &row, &active.element())?;
+            enforce_equal(dr, &chosen, &signers[i])?;
+            count = count.add(dr, &active.element());
+        }
+        for col in &column {
+            // 0 or 1 signer per committed key.
+            let minus_one = col.sub(dr, &Element::one());
+            col.mul(dr, &minus_one)?.enforce_zero(dr)?;
+        }
+        // count >= threshold
+        count.sub(dr, &threshold).enforce_le::<8>(dr, allocator, Fp::from(255u64))?;
+
+        let out: V<'dr, D, 4> = FixedVec::new(vec![path[1].clone(), epoch, digest, value])?;
+        let data = values_of(&out);
+        Ok(((left, right, Encoded::from_gadget(out)), data, D::unit()))
+    }
+}
 
 // --------------------------------------------------------------------------
 // Output, merge, finalize
@@ -616,6 +848,10 @@ fn app() -> Result<&'static App> {
             .and_then(|b| b.register(OutputStep))
             .and_then(|b| b.register(MergeStep))
             .and_then(|b| b.register(FinalizeStep))
+            .and_then(|b| b.register(KeysStart::<false>))
+            .and_then(|b| b.register(KeysStart::<true>))
+            .and_then(|b| b.register(KeysExtend))
+            .and_then(|b| b.register(SpendMultisig))
             .and_then(|b| b.finalize(pasta))
             .map_err(|e| e.to_string())
     })
@@ -693,9 +929,7 @@ fn plan_spend(note: &Note, predicate: &PredicateWitness) -> Result<SpendPlan> {
         }
         PredicateWitness::Multisig { .. } => {
             let _ = note;
-            return Err(CircuitError::PredicateError(
-                "multisig notes are not supported by the Ragu backend yet".into(),
-            ));
+            unreachable!("multisig spends are planned by prove_multisig_spend")
         }
     })
 }
@@ -727,21 +961,28 @@ fn prove_key(app: &App, sk: &[u8; 32]) -> Result<Pcd<Pasta, Rank, Key>> {
     app.seed(&mut rng(), KeyStep, bits).map(|p| p.0).map_err(|e| ragu_err("key", e))
 }
 
-fn prove_spend(app: &App, epoch: u64, input: &SpendInput<'_>) -> Result<Pcd<Pasta, Rank, Part>> {
-    let note = input.note;
-    let plan = plan_spend(note, input.predicate)?;
+fn spend_witness(note: &Note, epoch: u64, lock: u64, a: Fp, b: Fp) -> SpendWitness {
     let (rho, r) = note_rho_r_fields(&note.rho, &note.r);
-    let w = SpendWitness {
+    SpendWitness {
         value: note.value,
         owner: fp_from_pasta(&pk_to_fp(&note.owner_pk)),
         params: fp_from_pasta(&predicate_params_to_fp(&note.predicate_params_hash)),
         rho: fp_from_pasta(&rho),
         r: fp_from_pasta(&r),
         epoch,
-        lock: plan.lock,
-        a: plan.a,
-        b: plan.b,
-    };
+        lock,
+        a,
+        b,
+    }
+}
+
+fn prove_spend(app: &App, epoch: u64, input: &SpendInput<'_>) -> Result<Pcd<Pasta, Rank, Part>> {
+    let note = input.note;
+    if let PredicateWitness::Multisig { threshold, pubkeys, signer_indices, signer_sks } = input.predicate {
+        return prove_multisig_spend(app, epoch, input, *threshold, pubkeys, signer_indices, signer_sks);
+    }
+    let plan = plan_spend(note, input.predicate)?;
+    let w = spend_witness(note, epoch, plan.lock, plan.a, plan.b);
     let path = prove_path(app, &note.commitment(), input.witness)?;
     let key = prove_key(app, &plan.sk)?;
     let rng = &mut rng();
@@ -753,6 +994,65 @@ fn prove_spend(app: &App, epoch: u64, input: &SpendInput<'_>) -> Result<Pcd<Past
         SpendKind::HtlcRefund => app.fuse(rng, SpendHtlcRefund, w, path, key).map(|p| p.0),
     };
     part.map_err(|e| ragu_err("spend", e))
+}
+
+fn prove_multisig_spend(
+    app: &App,
+    epoch: u64,
+    input: &SpendInput<'_>,
+    threshold: u8,
+    pubkeys: &[[u8; 32]],
+    signer_indices: &[usize],
+    signer_sks: &[[u8; 32]],
+) -> Result<Pcd<Pasta, Rank, Part>> {
+    let unsupported = |msg: &str| CircuitError::PredicateError(format!("multisig on the Ragu backend: {msg}"));
+    if pubkeys.len() > MULTISIG_MAX_KEYS {
+        return Err(unsupported("at most 4 keys"));
+    }
+    if signer_sks.is_empty() || signer_sks.len() != signer_indices.len() {
+        return Err(unsupported("signer keys and indices must pair up"));
+    }
+    // Proving more signers than the threshold needs gains nothing.
+    let signers = signer_sks.len().min((threshold as usize).max(1));
+    if signers > MULTISIG_MAX_SIGNERS {
+        return Err(unsupported("at most 3 signers"));
+    }
+
+    let mut selected = [[false; MULTISIG_MAX_KEYS]; MULTISIG_MAX_SIGNERS];
+    for (i, idx) in signer_indices.iter().take(signers).enumerate() {
+        if *idx >= MULTISIG_MAX_KEYS {
+            return Err(unsupported("signer index out of range"));
+        }
+        selected[i][*idx] = true;
+    }
+    let mut keys = [Fp::from(0u64); MULTISIG_MAX_KEYS];
+    for (slot, pk) in keys.iter_mut().zip(pubkeys) {
+        *slot = fp_from_pasta(&pk_to_fp(pk));
+    }
+    let zero = Fp::from(0u64);
+    let w = MultisigWitness {
+        spend: spend_witness(input.note, epoch, 0, zero, zero),
+        threshold: threshold as u64,
+        key_count: pubkeys.len() as u64,
+        keys,
+        selected,
+    };
+
+    let rng = &mut rng();
+    let err = |e| ragu_err("multisig keys", e);
+    let first = prove_key(app, &signer_sks[0])?;
+    let mut set = if signers >= 2 {
+        let second = prove_key(app, &signer_sks[1])?;
+        app.fuse(rng, KeysStart::<true>, (), first, second).map_err(err)?.0
+    } else {
+        app.fuse(rng, KeysStart::<false>, (), first, unit(app)).map_err(err)?.0
+    };
+    if signers == 3 {
+        let third = prove_key(app, &signer_sks[2])?;
+        set = app.fuse(rng, KeysExtend, (), set, third).map_err(err)?.0;
+    }
+    let path = prove_path(app, &input.note.commitment(), input.witness)?;
+    app.fuse(rng, SpendMultisig, w, path, set).map(|p| p.0).map_err(|e| ragu_err("multisig spend", e))
 }
 
 fn prove_output(app: &App, anchor: Fp, epoch: u64, note: &Note) -> Result<Pcd<Pasta, Rank, Part>> {

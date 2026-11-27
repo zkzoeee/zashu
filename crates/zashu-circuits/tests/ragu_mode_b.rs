@@ -254,23 +254,52 @@ fn ragu_mint_refuses_halo2_transaction_proofs() {
 }
 
 #[test]
-fn multisig_notes_are_refused_with_a_clear_error() {
+fn multisig_needs_threshold_distinct_committed_signers() {
     use zashu_circuits::predicates::compute_multisig_params;
 
     let (sk_a, pk_a) = keypair(1);
     let (sk_b, pk_b) = keypair(2);
-    let (_, pk_c) = keypair(3);
+    let (sk_c, pk_c) = keypair(3);
+    let (sk_x, _) = keypair(9);
     let pks = vec![pk_a, pk_b, pk_c];
     let ms = note(90, pk_a, PredicateId::Multisig, compute_multisig_params(2, &pks), 1);
     let (world, w) = World::new(&[&ms]);
-    let witness = PredicateWitness::Multisig {
-        threshold: 2,
-        pubkeys: pks,
-        signer_indices: vec![0, 1],
-        signer_sks: vec![sk_a, sk_b],
-    };
+    let anchor = world.anchor;
     let out = note(90, pk_b, PredicateId::StandardSpend, [0u8; 32], 9);
-    let err = prove_tx(&world.anchor, 0, &[SpendInput { note: &ms, witness: &w[0], predicate: &witness }], &[&out])
-        .unwrap_err();
-    assert!(err.to_string().contains("multisig"), "{err}");
+    let (nf, cm) = ([ms.nullifier()], [out.commitment()]);
+    let witness = |signer_indices: Vec<usize>, signer_sks: Vec<[u8; 32]>| PredicateWitness::Multisig {
+        threshold: 2,
+        pubkeys: pks.clone(),
+        signer_indices,
+        signer_sks,
+    };
+    let attempt = |p: &PredicateWitness, checked: bool| {
+        let input = [SpendInput { note: &ms, witness: &w[0], predicate: p }];
+        if checked {
+            prove_tx(&anchor, 0, &input, &[&out])
+        } else {
+            prove_tx_unchecked(&anchor, 0, &input, &[&out])
+        }
+    };
+
+    // 2-of-3 with signers B and C.
+    let good = witness(vec![1, 2], vec![sk_b, sk_c]);
+    let proof = attempt(&good, true).unwrap();
+    verify_tx(&proof, Some(&anchor), &nf, &cm, Balance::Zero).unwrap();
+
+    // One signer is below the threshold.
+    assert!(not_accepted(attempt(&witness(vec![0], vec![sk_a]), false), &anchor, &nf, &cm, Balance::Zero));
+    // The same signer twice does not count as two.
+    assert!(not_accepted(attempt(&witness(vec![0, 0], vec![sk_a, sk_a]), false), &anchor, &nf, &cm, Balance::Zero));
+    // A key outside the committed list cannot stand in for a member.
+    assert!(not_accepted(attempt(&witness(vec![0, 1], vec![sk_a, sk_x]), false), &anchor, &nf, &cm, Balance::Zero));
+
+    // A stated threshold lower than the committed one changes the parameter hash.
+    let lowered = PredicateWitness::Multisig {
+        threshold: 1,
+        pubkeys: pks.clone(),
+        signer_indices: vec![0],
+        signer_sks: vec![sk_a],
+    };
+    assert!(not_accepted(attempt(&lowered, false), &anchor, &nf, &cm, Balance::Zero));
 }

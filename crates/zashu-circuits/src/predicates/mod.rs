@@ -56,8 +56,8 @@ pub fn htlc_hashlock(preimage: &[u8; 32]) -> [u8; 32] {
     hash_bytes_to_fp_stealth(preimage)
 }
 
-// Predicate parameter hashes. Except for multisig they are Poseidon hashes of
-// field elements (keys enter as `pk_to_fp`), so a circuit can recompute them.
+// Predicate parameter hashes: Poseidon hashes of field elements (keys enter
+// as `pk_to_fp`), so a circuit can recompute them.
 
 fn pred_tag(id: PredicateId) -> Fp {
     fp_from_u64(id as u8 as u64)
@@ -68,9 +68,30 @@ pub fn compute_p2pk_params(target_pk: &[u8; 32]) -> [u8; 32] {
     fp_to_bytes(&poseidon_3(fp_from_u64(DOMAIN_PREDICATE), pred_tag(PredicateId::P2PK), pk_to_fp(target_pk)))
 }
 
-/// Multisig parameters keep the byte-oriented hash: `t`-of-`n` is not yet
-/// expressed as an in-circuit predicate.
+/// Most keys a multisig note can list and still be spendable in-circuit.
+pub const MULTISIG_MAX_KEYS: usize = 4;
+/// Most signers a multisig spend can prove in-circuit.
+pub const MULTISIG_MAX_SIGNERS: usize = 3;
+
+/// `Poseidon7(DOMAIN_PREDICATE, 0x02 + 256 t + 65536 n, K(pk_1..pk_4), 0)` with
+/// absent keys as zero, for up to [`MULTISIG_MAX_KEYS`] keys.
+///
+/// Larger key sets fall back to a byte-oriented hash, which no circuit can
+/// open: such notes can only be spent on the Halo 2 backend.
 pub fn compute_multisig_params(threshold: u8, pubkeys: &[[u8; 32]]) -> [u8; 32] {
+    if pubkeys.len() <= MULTISIG_MAX_KEYS {
+        let tag = PredicateId::Multisig as u8 as u64 + 256 * threshold as u64 + 65536 * pubkeys.len() as u64;
+        let key = |i: usize| pubkeys.get(i).map(pk_to_fp).unwrap_or_else(|| fp_from_u64(0));
+        return fp_to_bytes(&poseidon_7([
+            fp_from_u64(DOMAIN_PREDICATE),
+            fp_from_u64(tag),
+            key(0),
+            key(1),
+            key(2),
+            key(3),
+            fp_from_u64(0),
+        ]));
+    }
     let mut parts: Vec<&[u8]> = Vec::with_capacity(pubkeys.len() + 2);
     let t_slice = [threshold];
     let n_slice = [pubkeys.len() as u8];
