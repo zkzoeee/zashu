@@ -303,3 +303,66 @@ fn multisig_needs_threshold_distinct_committed_signers() {
     };
     assert!(not_accepted(attempt(&lowered, false), &anchor, &nf, &cm, Balance::Zero));
 }
+
+/// What can be checked about predicate privacy from the outside: published
+/// proofs for different predicates have the same shape. Same length, same
+/// envelope and circuit index (the first 32 bytes: every published proof is
+/// the rerandomization step, never a spend circuit), and the same number of
+/// public inputs. This is a structural check, not a proof of hiding, which
+/// rests on Ragu's rerandomization.
+#[test]
+fn published_proofs_have_the_same_shape_for_every_predicate() {
+    use zashu_circuits::predicates::compute_multisig_params;
+
+    let (sk_a, pk_a) = keypair(1);
+    let (sk_b, pk_b) = keypair(2);
+    let preimage = [0x42u8; 32];
+    let hashlock = htlc_hashlock(&preimage);
+    let pks = vec![pk_a, pk_b];
+
+    let standard = note(50, pk_a, PredicateId::StandardSpend, [0u8; 32], 1);
+    let p2pk = note(50, pk_a, PredicateId::P2PK, compute_p2pk_params(&pk_b), 2);
+    let locked = note(50, pk_a, PredicateId::Timelock, compute_timelock_params(0, &pk_a), 3);
+    let htlc = note(50, pk_b, PredicateId::PrivateHTLC, compute_htlc_params(&hashlock, &pk_b, &pk_a, 10), 4);
+    let multisig = note(50, pk_a, PredicateId::Multisig, compute_multisig_params(2, &pks), 5);
+    let (world, w) = World::new(&[&standard, &p2pk, &locked, &htlc, &multisig]);
+    let out = note(50, pk_b, PredicateId::StandardSpend, [0u8; 32], 9);
+
+    let cases: Vec<(&Note, PredicateWitness)> = vec![
+        (&standard, PredicateWitness::StandardSpend { sk: sk_a }),
+        (&p2pk, PredicateWitness::P2PK { target_sk: sk_b, target_pk: pk_b }),
+        (&locked, PredicateWitness::Timelock { lock_epoch: 0, current_epoch: 0, sk: sk_a }),
+        (
+            &htlc,
+            PredicateWitness::PrivateHTLC {
+                hashlock,
+                pk_receiver: pk_b,
+                pk_refund: pk_a,
+                expiry_epoch: 10,
+                current_epoch: 0,
+                action: HtlcAction::Claim { preimage, sk_receiver: sk_b },
+            },
+        ),
+        (
+            &multisig,
+            PredicateWitness::Multisig {
+                threshold: 2,
+                pubkeys: pks.clone(),
+                signer_indices: vec![0, 1],
+                signer_sks: vec![sk_a, sk_b],
+            },
+        ),
+    ];
+
+    let mut shapes = Vec::new();
+    for (i, (n, predicate)) in cases.iter().enumerate() {
+        let proof =
+            prove_tx(&world.anchor, 0, &[SpendInput { note: n, witness: &w[i], predicate }], &[&out]).unwrap();
+        verify_tx(&proof, Some(&world.anchor), &[n.nullifier()], &[out.commitment()], Balance::Zero).unwrap();
+        let wire = proof.to_base64().unwrap().len();
+        shapes.push((proof.ipa_proof.len(), proof.ipa_proof[..32].to_vec(), proof.public_inputs.len(), wire));
+    }
+    for shape in &shapes[1..] {
+        assert_eq!(shape, &shapes[0], "a predicate is distinguishable by the shape of its proof");
+    }
+}
